@@ -48,7 +48,6 @@ typedef struct Config {
   uint8 audio_channels;
   uint16 audio_samples;
   bool autosave;
-  bool extend_y;
   bool no_sprite_limits;
   /* Extra logical SNES pixels rendered on each side. 0 is the authentic
    * 256-pixel viewport; 71 produces 398x224, the nearest even-centered 16:9

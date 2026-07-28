@@ -358,7 +358,7 @@ static uint16_t mmx_runner_to_snes_joypad(uint16_t r) {
 #endif
 
 static void DrawPpuFrameWithPerf(void) {
-  int render_scale = PpuGetCurrentRenderScale(g_ppu, g_ppu_render_flags);
+  const int render_scale = 1;
   uint8 *pixel_buffer = 0;
   int pitch = 0;
 
@@ -881,9 +881,8 @@ int main(int argc, char** argv) {
   g_ws_extra = IntMin(g_config.widescreen_extra, kWsExtraMax);
   g_ws_active = g_ws_extra != 0;
   g_snes_width = 256 + 2 * g_ws_extra;
-  g_snes_height = 224;// (g_config.extend_y ? 240 : 224);
+  g_snes_height = 224;
   g_ppu_render_flags = g_config.new_renderer * kPpuRenderFlags_NewRenderer |
-    g_config.extend_y * kPpuRenderFlags_Height240 |
     g_config.no_sprite_limits * kPpuRenderFlags_NoSpriteLimits;
 
   if (g_config.fullscreen == 1)
