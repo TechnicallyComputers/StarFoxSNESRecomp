@@ -75,8 +75,6 @@ static void HandleInput(int keyCode, int keyMod, bool pressed);
 static void HandleCommand(uint32 j, bool pressed);
 void OpenGLRenderer_Create(struct RendererFuncs *funcs);
 
-bool g_new_ppu = true;
-
 struct SpcPlayer *g_spc_player;
 
 static uint8_t g_my_pixels[(256 + 2 * kWsExtraMax) * 4 * 240];
@@ -1069,7 +1067,8 @@ error_reading:;
     host_report_breadcrumb("audio disabled in config");
   }
 
-  PpuBeginDrawing(g_ppu, g_my_pixels, g_snes_width * 4, 0);
+  PpuBeginDrawing(g_ppu, g_my_pixels, g_snes_width * 4,
+                  g_ppu_render_flags);
 
   MkDir("saves");
 
@@ -1400,7 +1399,6 @@ static void HandleCommand(uint32 j, bool pressed) {
     case kKeys_ToggleRenderer:
       g_ppu_render_flags ^= kPpuRenderFlags_NewRenderer;
       printf("New renderer = %x\n", g_ppu_render_flags & kPpuRenderFlags_NewRenderer);
-      g_new_ppu = (g_ppu_render_flags & kPpuRenderFlags_NewRenderer) != 0;
       break;
     case kKeys_VolumeUp:
     case kKeys_VolumeDown: HandleVolumeAdjustment(j == kKeys_VolumeUp ? 1 : -1); break;
