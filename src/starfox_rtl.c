@@ -20,8 +20,8 @@ static uint32_t s_resume_pc;
 static uint64_t s_next_vblank_master;
 static uint32_t s_portrait_cache[64][32];
 static bool s_portrait_cache_valid;
-static uint32_t s_side_background_cache[224][446];
-static uint8_t s_side_background_valid[224][446];
+static bool s_widescreen_mode2_line_seen;
+static uint8_t s_widescreen_scene_hold;
 
 enum {
   kSnesMasterClocksPerLine = 1364,
@@ -30,64 +30,6 @@ enum {
 };
 
 static bool irq_pending(void);
-
-static uint32_t ppu_rgb(uint16_t color, uint32_t brightness) {
-  const uint32_t red5 = color & 31;
-  const uint32_t green5 = (color >> 5) & 31;
-  const uint32_t blue5 = (color >> 10) & 31;
-  const uint32_t red = ((red5 << 3) | (red5 >> 2)) * brightness / 15;
-  const uint32_t green =
-      ((green5 << 3) | (green5 >> 2)) * brightness / 15;
-  const uint32_t blue = ((blue5 << 3) | (blue5 >> 2)) * brightness / 15;
-  return (red << 16) | (green << 8) | blue;
-}
-
-static uint32_t apply_fixed_color_math(uint32_t rgb, uint16_t fixed,
-                                       uint8_t math, uint8_t cgwsel,
-                                       uint8_t subscreen,
-                                       uint32_t brightness) {
-  if (!fixed || !(math & 0x03) || ((cgwsel & 2) && subscreen))
-    return rgb;
-  const int fr5 = fixed & 31;
-  const int fg5 = (fixed >> 5) & 31;
-  const int fb5 = (fixed >> 10) & 31;
-  const int fr = ((fr5 << 3) | (fr5 >> 2)) * (int)brightness / 15;
-  const int fg = ((fg5 << 3) | (fg5 >> 2)) * (int)brightness / 15;
-  const int fb = ((fb5 << 3) | (fb5 >> 2)) * (int)brightness / 15;
-  int r = (rgb >> 16) & 255;
-  int g = (rgb >> 8) & 255;
-  int b = rgb & 255;
-  if (math & 0x80) {
-    r = IntMax(r - fr, 0);
-    g = IntMax(g - fg, 0);
-    b = IntMax(b - fb, 0);
-  } else {
-    r = IntMin(r + fr, 255);
-    g = IntMin(g + fg, 255);
-    b = IntMin(b + fb, 255);
-  }
-  if (math & 0x40) {
-    r >>= 1;
-    g >>= 1;
-    b >>= 1;
-  }
-  return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
-}
-
-static uint32_t dominant_native_color(const uint32_t *row) {
-  uint32_t best = 0;
-  unsigned best_count = 0;
-  for (unsigned x = 16; x < 240; x++) {
-    unsigned count = 1;
-    for (unsigned x2 = x + 1; x2 < 240; x2++)
-      count += row[x2] == row[x];
-    if (count > best_count) {
-      best = row[x];
-      best_count = count;
-    }
-  }
-  return best;
-}
 
 /* Dialog portraits occupy PPU x=65..96, y=160..223 in the US v1.2 HUD.
  * The game updates their tiles over multiple DMA slices; with the host's
@@ -225,6 +167,71 @@ static bool irq_pending(void) {
   return g_snes->inIrq || (fx && fx->irq_pending);
 }
 
+static bool starfox_hud_active(void) {
+  const SuperFx *fx = g_snes->cart->superfx;
+  return fx && fx->ram_size > 0x21d &&
+         (fx->ram[0x21c] | fx->ram[0x21d]);
+}
+
+static bool starfox_widescreen_scene_active(const Ppu *ppu) {
+  return starfox_hud_active() || PPU_mode(ppu) == 2 ||
+         s_widescreen_scene_hold != 0;
+}
+
+/* Insert the presentation-only wide GSU replay before final PPU composition.
+ * This is deliberately a priority-buffer operation rather than an RGB copy:
+ * the normal SNES color window, fixed-color math, brightness, subscreen, and
+ * flash behavior then apply to the native center and the new side frustums as
+ * one picture. */
+static void starfox_widescreen_line_enhancer(Ppu *ppu, uint y, bool sub,
+                                             void *context) {
+  (void)context;
+  if (!g_ws_extra || y == 0 || y > 160 ||
+      !starfox_widescreen_scene_active(ppu) ||
+      !(ppu->screenEnabled[sub] & 1))
+    return;
+
+  const uint8_t *pixels = NULL;
+  const uint8_t *valid = NULL;
+  const uint8_t *bg1_palette = PpuGetMode2Bg1Palette(ppu);
+  unsigned width = 0, height = 0;
+  if (!superfx_get_widescreen_frame(g_snes->cart->superfx, &pixels, &valid,
+                                    &width, &height) ||
+      y > height)
+    return;
+
+  if (PPU_mode(ppu) == 2)
+    s_widescreen_mode2_line_seen = true;
+  const unsigned screen_y = y - 1;
+  const unsigned native_width = 224;
+  const unsigned replay_extra = (unsigned)g_ws_extra + 16;
+  const unsigned native_left = replay_extra;
+  const unsigned native_right = native_left + native_width;
+  const unsigned output_width = 256u + 2u * (unsigned)g_ws_extra;
+  const unsigned capture_base = (native_width - replay_extra) / 2;
+
+  for (unsigned raw_x = 0; raw_x < width && raw_x < output_width; raw_x++) {
+    if ((raw_x >= native_left && raw_x < native_right) ||
+        !valid[(size_t)screen_y * width + raw_x])
+      continue;
+
+    const unsigned side_x = raw_x < replay_extra
+                                ? raw_x
+                                : raw_x - native_width - replay_extra;
+    const unsigned palette_x = 16 + capture_base + side_x;
+    const uint8_t palette_base =
+        bg1_palette[(size_t)screen_y * 256 + palette_x];
+    const uint8_t palette_pixel =
+        palette_base + pixels[(size_t)screen_y * width + raw_x];
+    const int screen_x = (int)raw_x - g_ws_extra;
+    PpuZbufType *dst =
+        &ppu->bgBuffers[sub].data[screen_x + kPpuExtraLeftRight];
+    const PpuZbufType replay_pixel = 0xc000u + palette_pixel;
+    if (replay_pixel > *dst)
+      *dst = replay_pixel;
+  }
+}
+
 static bool run_main_until_boundary(void) {
   interp_bridge_set_master_deadline(s_next_vblank_master);
   const bool completed =
@@ -255,9 +262,26 @@ void StarFoxRunFrame(void) {
    * host margin of N pixels therefore needs N+16 newly projected columns on
    * each side to cover the complete output rather than leave a dead inset at
    * the new outer edge. */
+  SuperFx *const superfx = g_snes->cart->superfx;
   const unsigned gsu_extra = g_ws_extra ? g_ws_extra + 16 : 0;
-  superfx_set_widescreen(g_snes->cart->superfx, (uint8_t)gsu_extra,
+  superfx_set_enhancement_mode(
+      superfx, g_ws_extra
+                   ? kSuperFxEnhancement_WidescreenLinearProjection
+                   : kSuperFxEnhancement_None);
+  superfx_set_widescreen(superfx, (uint8_t)gsu_extra,
                          0x01, 0xac1d, 0x0034, 0x003a, 192);
+  if (g_ws_extra) {
+    /* RenderHUDFlag gates three screen-space GSU HUD passes inside
+     * RenderObjects. $01BE similarly gates a native-viewport effect pass.
+     * Their native results remain authoritative; replaying either pass with a
+     * 398-pixel clip range turns framebuffer clears into opaque side bands. */
+    static const uint16_t replay_zero_words[] = {0x01be, 0x021c};
+    superfx_set_widescreen_replay_zero_words(
+        superfx, replay_zero_words,
+        sizeof(replay_zero_words) / sizeof(replay_zero_words[0]));
+  } else {
+    superfx_set_widescreen_replay_zero_words(superfx, NULL, 0);
+  }
 
   if (!s_started) {
     cpu_state_init(&g_cpu, g_ram);
@@ -311,11 +335,6 @@ void StarFoxRunFrame(void) {
 
 void StarFoxDrawPpuFrame(void) {
   SimpleHdma hdma[8];
-  uint8_t line_brightness[224] = {0};
-  uint16_t line_fixed_color[224] = {0};
-  uint8_t line_cgadsub[224] = {0};
-  uint8_t line_cgwsel[224] = {0};
-  uint8_t line_subscreen[224] = {0};
   bool wide_scene = false;
   if (g_ws_extra && g_ppu->renderBuffer) {
     const size_t width = 256u + 2u * (unsigned)g_ws_extra;
@@ -323,28 +342,38 @@ void StarFoxDrawPpuFrame(void) {
       memset(g_ppu->renderBuffer + (size_t)y * g_ppu->renderPitch, 0,
              width * sizeof(uint32_t));
   }
-  /* The mode latched between host frames is not necessarily the mode Star Fox
-   * restores through HDMA for the visible picture. Always render the native
-   * 256 columns centered and collect Mode 2 data opportunistically; classify
-   * the scene from the modes actually observed on its scanlines below. */
-  PpuSetExtraSpaceCentered(g_ppu, (uint8_t)g_ws_extra);
-  PpuSetWidescreenLayerMask(g_ppu, 0);
+  /* BG2 is the Mode 2 landscape. Render its actual tilemap/offset result into
+   * the added columns; keep BG1 (the native GSU framebuffer) and BG3/HUD
+   * clamped until the GSU replay enhancer inserts only its valid side
+   * pixels. */
+  PpuSetExtraSpace(g_ppu, (uint8_t)g_ws_extra);
+  PpuSetWidescreenLayerMask(g_ppu, 1u << 1);
+  /* Star Fox centers its 224-pixel GSU playfield at x=16..239. Its opaque
+   * BG1 edge padding must not cover the continuous BG2 landscape or the
+   * presentation-only wide GSU replay. */
+  PpuSetWidescreenLayerViewportInset(g_ppu, 0, 16, 16);
+  if (g_ws_extra && starfox_hud_active()) {
+    /* RenderHUD allocates OAM slots 0..9 consistently: bombs on the right,
+     * then lives and shield on the left. Keep their original 16/24-pixel
+     * edge padding while anchoring them to the expanded viewport. */
+    PpuSetWsHudOamBand(g_ppu, 224, 64, 192);
+    PpuSetWsHudOamShiftRange(g_ppu, 0, 10);
+    PpuSetWidescreenLayerAnchorBand(g_ppu, 0, 161, 225, 64, 192);
+  } else {
+    PpuSetWsHudOamBand(g_ppu, 0, 0, 0);
+    PpuSetWsHudOamShiftRange(g_ppu, 0, 0);
+    PpuSetWidescreenLayerAnchorBand(g_ppu, 0, 0, 0, 0, 0);
+  }
   PpuSetMode2LayerCapture(g_ppu, g_ws_extra ? 1 : -1);
+  PpuSetWidescreenLineEnhancer(
+      g_ppu, g_ws_extra ? starfox_widescreen_line_enhancer : NULL, NULL);
+  s_widescreen_mode2_line_seen = false;
   dma_startDma(g_dma, g_snesrecomp_last_hdmaen, true);
   for (int ch = 0; ch < 8; ch++) SimpleHdma_Init(&hdma[ch], &g_dma->channel[ch]);
 
   for (int line = 0; line <= 224; line++) {
     for (int ch = 0; ch < 8; ch++) SimpleHdma_DoLine(&hdma[ch]);
     ppu_runLine(g_ppu, line);
-    if (line > 0) {
-      line_brightness[line - 1] = PPU_forcedBlank(g_ppu)
-                                      ? 0
-                                      : PPU_brightness(g_ppu);
-      line_fixed_color[line - 1] = g_ppu->fixedColor;
-      line_cgadsub[line - 1] = g_ppu->cgadsub;
-      line_cgwsel[line - 1] = g_ppu->cgwsel;
-      line_subscreen[line - 1] = g_ppu->screenEnabled[1];
-    }
   }
 
   {
@@ -353,199 +382,34 @@ void StarFoxDrawPpuFrame(void) {
      * authoritative through damage/obstacle frames that temporarily leave
      * Mode 2. Post-render Mode 2 additionally covers the no-HUD attract
      * carrier; title and controls previews are Mode 1 with this flag clear. */
-    const SuperFx *fx = g_snes->cart->superfx;
-    const bool render_hud =
-        fx && fx->ram_size > 0x21d && (fx->ram[0x21c] | fx->ram[0x21d]);
-    const unsigned mode = PPU_mode(g_ppu);
-    /* LoadPreset_Title and LoadPreset_Controls both select preset $10. The
-     * active 3D presets can temporarily select other modes for flashes,
-     * blanking, damage, and scripted transitions even when RenderHUDFlag is
-     * clear; keep those frames in the same wide presentation. The route/map
-     * is entered from the title/menu preset and remains native. (US v1.2:
-     * PresetSettings = WRAM $1785.) */
-    const bool active_3d_preset = g_ram[0x1785] != 0x10;
-    wide_scene = render_hud || mode == 2 || active_3d_preset;
+    const bool strong_scene =
+        starfox_hud_active() || s_widescreen_mode2_line_seen ||
+        PPU_mode(g_ppu) == 2;
+    wide_scene = strong_scene || s_widescreen_scene_hold != 0;
+    if (strong_scene)
+      s_widescreen_scene_hold = 2;
+    else if (s_widescreen_scene_hold)
+      s_widescreen_scene_hold--;
   }
 
-  if (g_ws_extra && wide_scene) {
-    /* Repeat only BG2's authentic 256-column result into the new margins.
-     * Keeping this copy outside the native center is a useful invariant: no
-     * widescreen presentation work can alter HUD, portraits, or the real GSU
-     * framebuffer. */
-    const uint8_t *bg2 = PpuGetMode2LayerCapture(g_ppu);
-    const unsigned width = 256u + 2u * (unsigned)g_ws_extra;
-    for (unsigned y = 0; bg2 && y < 224; y++) {
-      uint32_t *dst = (uint32_t *)(g_ppu->renderBuffer +
-                                   (size_t)y * g_ppu->renderPitch);
-      const uint32_t lower_fill =
-          y >= 160 ? dominant_native_color(dst + g_ws_extra) : 0;
-      for (unsigned output_x = 0; output_x < width; output_x++) {
-        const int screen_x = (int)output_x - g_ws_extra;
-        /* The native 224-pixel GSU view is windowed at x=16..239. Bridge its
-         * otherwise-black 16-pixel insets in both the 3D scene and the lower
-         * surround; preserve the authentic HUD contents at x=16..239. */
-        const bool bridge_gsu_inset =
-            (screen_x >= 0 && screen_x < 16) ||
-            (screen_x >= 240 && screen_x < 256);
-        if (screen_x >= 0 && screen_x < 256 && !bridge_gsu_inset)
-          continue;
-        if (y >= 160) {
-          /* BG2 is deliberately hidden beneath the cockpit/HUD here. Extend
-           * the dominant color actually visible on the native line instead:
-           * this is the ground in gameplay and black in space, while sparse
-           * HUD glyphs and hidden tile garbage cannot win the vote. */
-          dst[output_x] = lower_fill;
-          s_side_background_cache[y][output_x] = lower_fill;
-          s_side_background_valid[y][output_x] = 1;
-          continue;
-        }
-        /* Star Fox's usable Mode 2 landscape occupies x=16..239. Reflect from
-         * those edges instead of wrapping unrelated endpoints together; the
-         * old 4:3 boundary then remains position- and slope-continuous. */
-        const int reflected_x = screen_x < 16 ? 31 - screen_x
-                                               : 479 - screen_x;
-        const int search_step = screen_x < 16 ? 1 : -1;
-        uint32_t chosen = 0;
-        bool found = false;
-        /* BG2 can contain graphics intentionally hidden beneath the native
-         * GSU framebuffer. Never reveal those in the margins: accept only a
-         * BG2 sample whose RGB is actually visible in the composed native
-         * frame, searching inward for the nearest unobscured background. */
-        for (int attempt = 0; attempt < 224; attempt++) {
-          int sx = reflected_x - 16 + search_step * attempt;
-          sx %= 224;
-          if (sx < 0) sx += 224;
-          sx += 16;
-          const unsigned sy = y;
-          const uint16_t color = g_ppu->cgram[bg2[sy * 256 + sx]];
-          const uint32_t candidate = ppu_rgb(color, line_brightness[sy]);
-          const uint32_t compared = apply_fixed_color_math(
-              candidate, line_fixed_color[sy], line_cgadsub[sy],
-              line_cgwsel[sy], line_subscreen[sy], line_brightness[sy]);
-          const uint32_t *native_row =
-              (const uint32_t *)(g_ppu->renderBuffer +
-                                 (size_t)sy * g_ppu->renderPitch);
-          if (candidate == native_row[g_ws_extra + sx] ||
-              compared == native_row[g_ws_extra + sx]) {
-            chosen = candidate;
-            found = true;
-            break;
-          }
-        }
-        if (found) {
-          dst[output_x] = chosen;
-          s_side_background_cache[y][output_x] = chosen;
-          s_side_background_valid[y][output_x] = 1;
-        } else {
-          dst[output_x] = s_side_background_valid[y][output_x]
-                              ? s_side_background_cache[y][output_x]
-                              : 0;
-        }
-      }
-    }
-  }
-
-  if (g_ws_extra && wide_scene) {
-    const uint8_t *pixels, *valid;
-    const uint8_t *bg1_palette = PpuGetMode2Bg1Palette(g_ppu);
-    unsigned width, height;
+  if (g_ws_extra && !wide_scene) {
     const unsigned output_width = 256u + 2u * (unsigned)g_ws_extra;
-
-    if (superfx_get_widescreen_frame(g_snes->cart->superfx, &pixels, &valid,
-                                     &width, &height)) {
-      /* The native 224-pixel GSU framebuffer is centered in the 256-pixel
-       * PPU viewport, leaving 16 pixels on either side. The wide capture uses
-       * the same placement inside the expanded host surface. */
-      /* RenderObjects also draws the fixed cockpit/HUD band near the bottom.
-       * Keep that band from the authentic centered pass; only replay the 3D
-       * scene above it into the side frustums. */
-      for (unsigned y = 0; y < height && y < 160; y++) {
-        uint32_t *dst = (uint32_t *)(g_ppu->renderBuffer +
-                                     (size_t)y * g_ppu->renderPitch);
-        for (unsigned raw_x = 0; raw_x < width; raw_x++) {
-          /* With N+16 projected columns per side, the replay surface maps
-           * directly to the host output: its authentic 224-pixel center is
-           * at output x=N+16..N+239. */
-          const unsigned native_left = g_ws_extra + 16;
-          const unsigned native_right = native_left + 224;
-          if (raw_x >= native_left && raw_x < native_right)
-            continue;
-          if (raw_x >= output_width || !valid[y * width + raw_x])
-            continue;
-
-          const unsigned native_width = 224;
-          const unsigned replay_extra = g_ws_extra + 16;
-          const unsigned capture_base =
-              (native_width - replay_extra) / 2;
-          const unsigned side_x = raw_x < replay_extra
-                                      ? raw_x
-                                      : raw_x - native_width - replay_extra;
-          const unsigned palette_x = 16 + capture_base + side_x;
-          const uint8_t palette_base =
-              bg1_palette[y * 256 + palette_x];
-          uint16_t color =
-              g_ppu->cgram[palette_base + pixels[y * width + raw_x]];
-          uint32_t brightness = line_brightness[y];
-          uint32_t red5 = color & 31;
-          uint32_t green5 = (color >> 5) & 31;
-          uint32_t blue5 = (color >> 10) & 31;
-          uint32_t red = ((red5 << 3) | (red5 >> 2)) * brightness / 15;
-          uint32_t green = ((green5 << 3) | (green5 >> 2)) * brightness / 15;
-          uint32_t blue = ((blue5 << 3) | (blue5 >> 2)) * brightness / 15;
-          dst[raw_x] = (red << 16) | (green << 8) | blue;
-        }
-      }
-    }
-  }
-
-  if (g_ws_extra && wide_scene) {
-    /* Fixed-color flashes are windowed to the native 224-pixel viewport by
-     * the game. Carry the same line-local color math into the new side view
-     * after both PPU background and GSU polygon composition. */
-    const int left0 = 0, left1 = 16 + g_ws_extra;
-    const int right0 = 240 + g_ws_extra;
-    const int right1 = 256 + 2 * g_ws_extra;
-    for (int y = 0; y < 192; y++) {
-      uint16_t fixed = line_fixed_color[y];
-      uint8_t math = line_cgadsub[y];
-      if (!fixed || !(math & 0x03) ||
-          ((line_cgwsel[y] & 2) && line_subscreen[y]))
-        continue;
-      uint32_t brightness = line_brightness[y];
-      int fr = (((fixed & 31) << 3) | ((fixed & 31) >> 2)) * brightness / 15;
-      int fg5 = (fixed >> 5) & 31;
-      int fb5 = (fixed >> 10) & 31;
-      int fg = ((fg5 << 3) | (fg5 >> 2)) * brightness / 15;
-      int fb = ((fb5 << 3) | (fb5 >> 2)) * brightness / 15;
+    /* Bounded screens still render through the same full-width PPU setup so
+     * switching modes never changes the native center. Discard only their
+     * unowned side columns after classification. */
+    for (int y = 0; y < 224; y++) {
       uint32_t *dst = (uint32_t *)(g_ppu->renderBuffer +
                                    (size_t)y * g_ppu->renderPitch);
-      for (int span = 0; span < 2; span++) {
-        int x0 = span ? right0 : left0;
-        int x1 = span ? right1 : left1;
-        for (int x = x0; x < x1; x++) {
-          int r = (dst[x] >> 16) & 255;
-          int g = (dst[x] >> 8) & 255;
-          int b = dst[x] & 255;
-          if (math & 0x80) {
-            r = IntMax(r - fr, 0); g = IntMax(g - fg, 0);
-            b = IntMax(b - fb, 0);
-          } else {
-            r = IntMin(r + fr, 255); g = IntMin(g + fg, 255);
-            b = IntMin(b + fb, 255);
-          }
-          if (math & 0x40) { r >>= 1; g >>= 1; b >>= 1; }
-          dst[x] = ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
-        }
-      }
+      memset(dst, 0, (size_t)g_ws_extra * sizeof(*dst));
+      memset(dst + g_ws_extra + 256, 0,
+             (output_width - (unsigned)g_ws_extra - 256) * sizeof(*dst));
     }
   }
 
   if (g_ws_extra && wide_scene)
     stabilize_dialog_portrait();
-  else {
+  else
     s_portrait_cache_valid = false;
-    memset(s_side_background_valid, 0, sizeof(s_side_background_valid));
-  }
 
   /* The PPU center displayed the framebuffer uploaded before the newest GSU
    * completion. Promote that completion only after this picture so the side

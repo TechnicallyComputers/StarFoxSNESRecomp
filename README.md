@@ -96,6 +96,9 @@ Set `Widescreen` in `config.ini` to one of the following:
 Full 21:9 currently exceeds the renderer's OAM-safe capacity and is not a
 supported preset.
 
+See [docs/TRUE_WIDESCREEN.md](docs/TRUE_WIDESCREEN.md) for the rendering
+model, validation notes, and the remaining spawn/culling audit.
+
 ## Building from source
 
 Prerequisites are CMake 3.16+, Ninja or another CMake-supported build system,
