@@ -178,7 +178,7 @@ static bool starfox_widescreen_scene_active(const Ppu *ppu) {
          s_widescreen_scene_hold != 0;
 }
 
-/* Insert the presentation-only GSU side replays before final PPU composition.
+/* Insert the presentation-only wide GSU replay before final PPU composition.
  * This is deliberately a priority-buffer operation rather than an RGB copy:
  * the normal SNES color window, fixed-color math, brightness, subscreen, and
  * flash behavior then apply to the native center and the new side frustums as
@@ -265,6 +265,16 @@ void StarFoxRunFrame(void) {
   const unsigned gsu_extra = g_ws_extra ? g_ws_extra + 16 : 0;
   superfx_set_widescreen(g_snes->cart->superfx, (uint8_t)gsu_extra,
                          0x01, 0xac1d, 0x0034, 0x003a, 192);
+  {
+    /* RenderHUDFlag gates three screen-space GSU HUD passes inside
+     * RenderObjects. $01BE similarly gates a native-viewport effect pass.
+     * Their native results remain authoritative; replaying either pass with a
+     * 398-pixel clip range turns framebuffer clears into opaque side bands. */
+    static const uint16_t replay_zero_words[] = {0x01be, 0x021c};
+    superfx_set_widescreen_replay_zero_words(
+        g_snes->cart->superfx, replay_zero_words,
+        sizeof(replay_zero_words) / sizeof(replay_zero_words[0]));
+  }
 
   if (!s_started) {
     cpu_state_init(&g_cpu, g_ram);
@@ -327,13 +337,13 @@ void StarFoxDrawPpuFrame(void) {
   }
   /* BG2 is the Mode 2 landscape. Render its actual tilemap/offset result into
    * the added columns; keep BG1 (the native GSU framebuffer) and BG3/HUD
-   * clamped until the GSU replay enhancer inserts only their valid side
+   * clamped until the GSU replay enhancer inserts only its valid side
    * pixels. */
   PpuSetExtraSpace(g_ppu, (uint8_t)g_ws_extra);
   PpuSetWidescreenLayerMask(g_ppu, 1u << 1);
   /* Star Fox centers its 224-pixel GSU playfield at x=16..239. Its opaque
    * BG1 edge padding must not cover the continuous BG2 landscape or the
-   * presentation-only GSU side replays. */
+   * presentation-only wide GSU replay. */
   PpuSetWidescreenLayerViewportInset(g_ppu, 0, 16, 16);
   if (g_ws_extra && starfox_hud_active()) {
     /* RenderHUD allocates OAM slots 0..9 consistently: bombs on the right,
