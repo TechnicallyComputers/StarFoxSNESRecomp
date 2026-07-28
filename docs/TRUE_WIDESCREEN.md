@@ -57,10 +57,13 @@ At 16:9 the host output is 398x224. The native Super FX playfield remains
 columns on each side (`71` host-margin pixels plus the original `16`-pixel BG1
 inset).
 
-All Super FX runtime behavior is opt-in. A title must call
-`superfx_set_widescreen` for a specific task and may separately provide its
-replay-only word filters. With no opt-in call, the architectural PLOT/RPIX
-path and framebuffer behavior are unchanged.
+All enhanced Super FX runtime behavior is opt-in. A title must first select
+`kSuperFxEnhancement_WidescreenLinearProjection` with
+`superfx_set_enhancement_mode`, then configure a specific task with
+`superfx_set_widescreen`. It may separately provide replay-only word filters.
+New Super FX cores default to `kSuperFxEnhancement_None`; merely supplying
+widescreen task parameters is inert in that mode. The architectural 8-bit
+PLOT/RPIX path and native framebuffer remain authoritative in either mode.
 
 ## Remaining gameplay question
 

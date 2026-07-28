@@ -262,18 +262,25 @@ void StarFoxRunFrame(void) {
    * host margin of N pixels therefore needs N+16 newly projected columns on
    * each side to cover the complete output rather than leave a dead inset at
    * the new outer edge. */
+  SuperFx *const superfx = g_snes->cart->superfx;
   const unsigned gsu_extra = g_ws_extra ? g_ws_extra + 16 : 0;
-  superfx_set_widescreen(g_snes->cart->superfx, (uint8_t)gsu_extra,
+  superfx_set_enhancement_mode(
+      superfx, g_ws_extra
+                   ? kSuperFxEnhancement_WidescreenLinearProjection
+                   : kSuperFxEnhancement_None);
+  superfx_set_widescreen(superfx, (uint8_t)gsu_extra,
                          0x01, 0xac1d, 0x0034, 0x003a, 192);
-  {
+  if (g_ws_extra) {
     /* RenderHUDFlag gates three screen-space GSU HUD passes inside
      * RenderObjects. $01BE similarly gates a native-viewport effect pass.
      * Their native results remain authoritative; replaying either pass with a
      * 398-pixel clip range turns framebuffer clears into opaque side bands. */
     static const uint16_t replay_zero_words[] = {0x01be, 0x021c};
     superfx_set_widescreen_replay_zero_words(
-        g_snes->cart->superfx, replay_zero_words,
+        superfx, replay_zero_words,
         sizeof(replay_zero_words) / sizeof(replay_zero_words[0]));
+  } else {
+    superfx_set_widescreen_replay_zero_words(superfx, NULL, 0);
   }
 
   if (!s_started) {
