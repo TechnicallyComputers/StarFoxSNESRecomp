@@ -34,6 +34,7 @@ last_run_report.json
 
 # Release staging and locally packaged artifacts.
 release-stage/
+release-linux/
 StarFoxSNESRecomp-windows-*.zip
 
 # IDE, operating-system, and tool caches.

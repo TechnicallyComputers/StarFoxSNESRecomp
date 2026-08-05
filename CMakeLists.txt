@@ -4,6 +4,8 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
 set(SNESRECOMP_ROOT ${CMAKE_SOURCE_DIR}/snesrecomp)
+set(SNESRECOMP_SDL_BACKEND "SDL3" CACHE STRING
+    "Desktop SDL backend (SDL3 or SDL2)")
 include(${SNESRECOMP_ROOT}/runner/runner.cmake)
 
 # Launcher UI backend: the SHARED recomp-ui launcher (F:\Projects\recomp-ui,
@@ -12,7 +14,6 @@ include(${SNESRECOMP_ROOT}/runner/runner.cmake)
 # engine in favour of this shared, console-agnostic launcher.
 include(${CMAKE_SOURCE_DIR}/recomp-ui/recomp_ui.cmake)
 
-find_package(SDL2 REQUIRED)
 find_package(OpenGL REQUIRED)
 
 set(SNESRECOMP_BUILD_VERSION "dev" CACHE STRING
@@ -41,7 +42,7 @@ add_executable(StarFoxSNESRecomp
 
 target_include_directories(StarFoxSNESRecomp PRIVATE
   ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/recomp
-  ${SNESRECOMP_RUNNER_INCLUDE_DIRS} ${SDL2_INCLUDE_DIRS})
+  ${SNESRECOMP_RUNNER_INCLUDE_DIRS})
 target_compile_definitions(StarFoxSNESRecomp PRIVATE
   SMW_DISABLE_LM=1 SYSTEM_VOLUME_MIXER_AVAILABLE=0
   SNESRECOMP_BUILD_VERSION="${SNESRECOMP_BUILD_VERSION}"
@@ -54,13 +55,20 @@ if(NOT MSVC)
     "$<$<COMPILE_LANGUAGE:CXX>:-w>")
 endif()
 target_link_libraries(StarFoxSNESRecomp PRIVATE
-  ${SNESRECOMP_RUNNER_LIBRARIES} SDL2::SDL2 OpenGL::GL)
+  ${SNESRECOMP_RUNNER_LIBRARIES} OpenGL::GL)
 if(WIN32)
   target_link_libraries(StarFoxSNESRecomp PRIVATE dbghelp)
 endif()
+
+# SDL3 by default, SDL2 via -DSNESRECOMP_SDL_BACKEND=SDL2. Replaces the game's
+# own find_package(SDL2)/SDL2::SDL2 wiring: recomp-ui compiles its SDL3 backend
+# unconditionally, so hardcoding SDL2 here put two SDL majors in one binary.
+# Hosts include "desktop/sdl_compat.h" rather than <SDL.h> so both majors build.
+snesrecomp_target_sdl(StarFoxSNESRecomp)
 
 # Dear ImGui pre-boot launcher (GUI) from the shared recomp-ui repo. One call
 # wires sources/includes/RECOMP_LAUNCHER define/CXX/asset-staging (same Star
 # Fox boxart; recomp-ui's default pad.tga is already the SNES pad).
 recomp_target_launcher_ui(StarFoxSNESRecomp
+  CONSOLE snes
   BOXART ${CMAKE_SOURCE_DIR}/recomp/launcher/boxart.tga)

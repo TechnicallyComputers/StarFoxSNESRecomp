@@ -323,6 +323,9 @@ void StarFoxRunFrame(void) {
     return;
   if (!s_next_vblank_master)
     schedule_first_vblank();
+#if SNESRECOMP_TRACE
+  /* Boot/heartbeat CPU-state trace: trace builds only. Release builds were
+   * writing one of these to stderr every 120 frames for the whole session. */
   if (counter_global_frames < 16 || (counter_global_frames % 120) == 0)
     fprintf(stderr,
             "[starfox] frame=%u resume=$%06X A=%04X X=%04X Y=%04X "
@@ -330,6 +333,7 @@ void StarFoxRunFrame(void) {
             counter_global_frames, (unsigned)s_resume_pc, g_cpu.A, g_cpu.X,
             g_cpu.Y, g_cpu.S, g_cpu.P, g_cpu.emulation, g_cpu.DB,
             (unsigned long long)g_cpu.master_cycles);
+#endif
   counter_global_frames++;
 }
 
