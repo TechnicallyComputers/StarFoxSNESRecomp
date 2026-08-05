@@ -442,15 +442,36 @@ static void SDLCALL AudioStreamCallback(
   (void)userdata;
   (void)total_amount;
   if (additional_amount <= 0) return;
-  if ((size_t)additional_amount > g_audio_stream_buffer_size) {
-    uint8 *resized =
-        (uint8 *)realloc(g_audio_stream_buffer, additional_amount);
+
+  /* Keep a cushion queued rather than feeding exactly what was asked for.
+   *
+   * SDL2's pull callback wrote straight into a fixed device buffer, so the
+   * emulator always had ~32 ms of slack to produce the next block. SDL3 pulls
+   * from the stream in whatever chunk the backend wants (measured: ~320 frames
+   * / 10 ms, varying call to call, resampling 32040 Hz S16 up to a 44100 Hz F32
+   * device), and if we only ever push `additional_amount` the stream holds no
+   * reserve at all - any hitch in the APU underruns immediately and is audible
+   * as static.
+   *
+   * FillAudioBuffer also carries g_audiobuffer_cur across calls, so a request
+   * that is not a whole number of frames would permanently shift the L/R phase.
+   * The docs explicitly warn byte counts "might be slightly overestimated". */
+  const int frame_bytes = 2 * (int)sizeof(int16);     /* stereo S16 */
+  const int target_queued = 1024 * frame_bytes;       /* ~32 ms */
+  int queued = SDL_GetAudioStreamQueued(stream);
+  if (queued < 0) queued = 0;
+  int want_bytes = additional_amount;
+  if (target_queued - queued > want_bytes) want_bytes = target_queued - queued;
+  want_bytes = ((want_bytes + frame_bytes - 1) / frame_bytes) * frame_bytes;
+
+  if ((size_t)want_bytes > g_audio_stream_buffer_size) {
+    uint8 *resized = (uint8 *)realloc(g_audio_stream_buffer, want_bytes);
     if (!resized) return;
     g_audio_stream_buffer = resized;
-    g_audio_stream_buffer_size = (size_t)additional_amount;
+    g_audio_stream_buffer_size = (size_t)want_bytes;
   }
-  FillAudioBuffer(g_audio_stream_buffer, additional_amount);
-  SDL_PutAudioStreamData(stream, g_audio_stream_buffer, additional_amount);
+  FillAudioBuffer(g_audio_stream_buffer, want_bytes);
+  SDL_PutAudioStreamData(stream, g_audio_stream_buffer, want_bytes);
 }
 #else
 static void SDLCALL AudioCallback(void *userdata, Uint8 *stream, int len) {
