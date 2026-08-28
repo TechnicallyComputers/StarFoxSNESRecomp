@@ -81,6 +81,9 @@ in `config.ini`:
 | Turbo / fast-forward | Tab |
 | FPS / performance readout | F |
 | Toggle PPU renderer | R |
+| Presentation debugger | Ctrl+F5 |
+| Presentation step forward | Ctrl+F6 |
+| Presentation step back | Ctrl+F7 |
 | Window size | Ctrl+Up / Ctrl+Down |
 | Volume | Shift+= / Shift+- |
 
@@ -89,15 +92,58 @@ in `config.ini`:
 Set `Widescreen` in `config.ini` to one of the following:
 
 - `Off` for the original 4:3 presentation.
+- `16:10` for a narrower expanded viewport.
 - `16:9` for the tested expanded viewport.
-- An integer from `0` through `95` for a custom number of extra pixels per
+- `21:9` for an ultrawide expanded viewport.
+- `32:9` for Enhanced-style super-ultrawide output.
+- An integer from `0` through `272` for a custom number of extra pixels per
   side.
 
-Full 21:9 currently exceeds the renderer's OAM-safe capacity and is not a
-supported preset.
+Enhanced-style `DisplayMode` values are also accepted:
+`0`/`4:3`, `1`/`16:9`, `2`/`16:10`, `3`/`21:9`, and `4`/`32:9`.
 
 See [docs/TRUE_WIDESCREEN.md](docs/TRUE_WIDESCREEN.md) for the rendering
 model, validation notes, and the remaining spawn/culling audit.
+
+The launcher exposes the fixed 16:9 toggle. Use `config.ini` directly for
+`16:10`, `21:9`, `32:9`, or custom extra-pixel values.
+
+Set `WidescreenHud = 1` to anchor gameplay HUD elements to the expanded
+viewport edges in widescreen. Set it to `0` to keep the original 4:3 HUD
+placement while the playfield remains widened.
+
+Advanced HUD layout keys expose the current Star Fox anchor geometry:
+`WidescreenHudOamFirstSlot`, `WidescreenHudOamSlots`,
+`WidescreenHudOamHeight`, `WidescreenHudLeftEnd`,
+`WidescreenHudRightStart`, `WidescreenHudBgY0`, and
+`WidescreenHudBgY1`. Defaults match the validated HUD slots and meter band;
+this is not the full Enhanced mouse-driven per-element editor yet.
+
+## Enhanced-Derived Mods
+
+Set `CrosshairColor` in `config.ini` to `Original`, `White`, `Green`, `Blue`,
+`Red`, `Yellow`, `Cyan`, `Magenta`, or `Orange`. `Original` preserves the
+retail palette; the other options apply a presentation-only tint to the OBJ
+crosshair palette during frame rendering and restore emulated CGRAM before the
+next simulation step. The same setting also redirects the Super FX cockpit HUD
+triangle color through the bright crosshair palette entry for the current
+simulation frame, then restores `M_HUDCOLOUR`.
+
+The `[Features]` section also exposes `GodMode` and `GodNuke`. `GodMode = 1`
+reasserts the Enhanced-derived no-collision flag and keeps Nova Bombs at a
+floor of three during active gameplay. With `GodNuke = 1`, hold R while firing
+a Nova Bomb with A to arm the newly created nuke for the Enhanced-style screen
+clear, including the protected boss-shape exceptions from the reference port.
+
+Set `ShowFPS = 1` in `[General]` to start with the live on-screen FPS readout
+enabled. Like Enhanced, it reports completed presentations in short samples.
+The `F` hotkey still toggles it at runtime.
+
+Set `PresentationFPS` to `20`, `30`, `60`, `90`, `120`, `240`, `360`, or
+`480` to choose the host presentation cadence. These modes keep SNES
+simulation cadence unchanged. Rates below 60 skip presentation draws; rates
+above 60 duplicate the newest completed presentation with vsync disabled. The
+high-FPS modes do not yet include Enhanced's transform interpolation.
 
 ## Building from source
 
@@ -105,11 +151,22 @@ Prerequisites are CMake 3.16+, Ninja or another CMake-supported build system,
 Python 3.9+, rustup, SDL2, and OpenGL development files.
 
 ```bash
-git clone https://github.com/mstan/StarFoxSNESRecomp
+git clone --recurse-submodules https://github.com/mstan/StarFoxSNESRecomp
 git clone https://github.com/mstan/snesrecomp
 git clone https://github.com/mstan/recomp-ui
 cd StarFoxSNESRecomp
 ```
+
+If you cloned without `--recurse-submodules`, initialize the reference sources
+before using the comparison tools:
+
+```bash
+git submodule update --init --recursive
+```
+
+For bounded validation runs, pass `--frames N` after any `--script` or
+`--framedump` arguments. This exits cleanly after `N` simulated frames and keeps
+launcher UI disabled for automated captures.
 
 Make `snesrecomp/` point to the sibling framework checkout. On macOS or Linux:
 
@@ -150,6 +207,7 @@ by the `snesrecomp` gitlink.
 | `docs/` | Reference-source provenance and development documentation. |
 | `snesrecomp/` | Junction or symlink to the sibling framework checkout. |
 | `third_party/` | Vendored dependencies retaining their own licenses. |
+| `third_party/starfox-enhanced/` | Pinned reference-only source port used for comparison and symbol provenance. |
 | `config.ini` | Runtime graphics, audio, controller, and hotkey settings. |
 | `recomp/launcher/` | Star Fox launcher theme and North American cover thumbnail. |
 | `tools/make_release.ps1` | Packages a completed MinGW release build and its runtime DLLs. |
@@ -160,6 +218,12 @@ Addresses and annotations are checked against the exact-version
 [StarFoxDisassembly](https://github.com/SpyderTL/StarFoxDisassembly) reference.
 See [docs/REFERENCE_SOURCES.md](docs/REFERENCE_SOURCES.md) for its pinned commit
 and usage constraints.
+
+[Star Fox Enhanced](https://github.com/kandowontu/starfox-enhanced) is pinned as
+a reference-only submodule for symbol inventory, architecture comparison, and
+portable mod research. See
+[docs/STARFOX_ENHANCED_COMPARISON.md](docs/STARFOX_ENHANCED_COMPARISON.md) for
+the current comparison notes and transfer candidates.
 
 ## License
 

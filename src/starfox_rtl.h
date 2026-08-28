@@ -3,6 +3,8 @@
 
 #include "common_rtl.h"
 
+void StarFoxEnhancedPreFrame(uint32 inputs);
+void StarFoxEnhancedPostFrame(uint32 inputs);
 void StarFoxRunFrame(void);
 void StarFoxDrawPpuFrame(void);
 

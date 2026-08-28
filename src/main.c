@@ -68,6 +68,9 @@ static void RenderNumber(uint8 *dst, size_t pitch, int n, uint8 big);
 static void OpenOneGamepad(int i);
 static uint32 GetActiveControllers(void);
 static void HandleVolumeAdjustment(int volume_adjustment);
+static void PresentationDebugToggle(void);
+static void PresentationDebugStepForward(void);
+static void PresentationDebugStepBack(void);
 static void HandleGamepadAxisInput(GamepadInfo *gi, int axis, Sint16 value);
 static int RemapSdlButton(int button);
 static void HandleGamepadInput(GamepadInfo *gi, int button, bool pressed);
@@ -114,6 +117,11 @@ static uint32 g_input_state;
 static uint32 g_pad_buttons;
 static bool g_display_perf;
 static int g_curr_fps;
+static uint64 g_fps_sample_start;
+static uint32 g_fps_sample_presentations;
+static bool g_presentation_debug_frozen;
+static bool g_presentation_debug_step_live;
+static uint32 g_presentation_debug_cursor;
 static int g_ppu_render_flags = 0;
 static int g_snes_width, g_snes_height;
 static int g_sdl_audio_mixer_volume = SNESRECOMP_SDL_MIX_MAXVOLUME;
@@ -122,6 +130,15 @@ static struct RendererFuncs g_renderer_funcs;
 static GamepadInfo g_gamepad[2];
 
 extern Snes *g_snes;
+
+enum {
+  kPresentationHistoryFrames = 120,
+};
+
+static uint8 *g_presentation_history[kPresentationHistoryFrames];
+static size_t g_presentation_history_bytes;
+static uint32 g_presentation_history_head;
+static uint32 g_presentation_history_count;
 
 // --- Scripted input ---
 typedef struct {
@@ -336,6 +353,125 @@ void RtlDrawPpuFrame(uint8 *pixel_buffer, size_t pitch, uint32 render_flags) {
                        g_snes_height);
 }
 
+static void NoteCompletedPresentation(void) {
+  if (!(g_display_perf || g_config.display_perf_title))
+    return;
+  const uint64 now = SDL_GetPerformanceCounter();
+  const uint64 freq = SDL_GetPerformanceFrequency();
+  if (!g_fps_sample_start)
+    g_fps_sample_start = now;
+  g_fps_sample_presentations++;
+  if (now - g_fps_sample_start >= freq / 4) {
+    const uint64 elapsed = now - g_fps_sample_start;
+    g_curr_fps = (int)((g_fps_sample_presentations * freq + elapsed / 2) /
+                       elapsed);
+    g_fps_sample_start = now;
+    g_fps_sample_presentations = 0;
+  }
+}
+
+static bool PresentationHistoryEnsure(void) {
+  if (g_snes_width <= 0 || g_snes_height <= 0)
+    return false;
+  const size_t bytes = (size_t)g_snes_width * (size_t)g_snes_height * 4u;
+  if (bytes == g_presentation_history_bytes)
+    return true;
+  for (int i = 0; i < kPresentationHistoryFrames; i++) {
+    free(g_presentation_history[i]);
+    g_presentation_history[i] = NULL;
+  }
+  g_presentation_history_bytes = bytes;
+  g_presentation_history_head = 0;
+  g_presentation_history_count = 0;
+  g_presentation_debug_cursor = 0;
+  return true;
+}
+
+static void PresentationHistoryRecord(const uint8 *pixels, int pitch) {
+  if (!pixels || pitch <= 0 || !PresentationHistoryEnsure())
+    return;
+  uint8 *dst = g_presentation_history[g_presentation_history_head];
+  if (!dst) {
+    dst = (uint8 *)malloc(g_presentation_history_bytes);
+    if (!dst)
+      Die("presentation history allocation failed");
+    g_presentation_history[g_presentation_history_head] = dst;
+  }
+  const size_t line_bytes = (size_t)g_snes_width * 4u;
+  for (int y = 0; y < g_snes_height; y++)
+    memcpy(dst + (size_t)y * line_bytes, pixels + (size_t)y * pitch,
+           line_bytes);
+  g_presentation_history_head =
+      (g_presentation_history_head + 1u) % kPresentationHistoryFrames;
+  if (g_presentation_history_count < kPresentationHistoryFrames)
+    g_presentation_history_count++;
+  if (g_presentation_debug_frozen)
+    g_presentation_debug_cursor = 0;
+}
+
+static const uint8 *PresentationHistoryFrame(uint32 age) {
+  if (g_presentation_history_count == 0)
+    return NULL;
+  if (age >= g_presentation_history_count)
+    age = g_presentation_history_count - 1u;
+  const uint32 idx =
+      (g_presentation_history_head + kPresentationHistoryFrames - 1u - age) %
+      kPresentationHistoryFrames;
+  return g_presentation_history[idx];
+}
+
+static bool PresentationDebugPresentCurrent(void) {
+  const uint8 *src = PresentationHistoryFrame(g_presentation_debug_cursor);
+  if (!src)
+    return false;
+  uint8 *pixel_buffer = NULL;
+  int pitch = 0;
+  g_renderer_funcs.BeginDraw(g_snes_width, g_snes_height, &pixel_buffer,
+                             &pitch);
+  if (!pixel_buffer || pitch <= 0)
+    return false;
+  const size_t line_bytes = (size_t)g_snes_width * 4u;
+  for (int y = 0; y < g_snes_height; y++)
+    memcpy(pixel_buffer + (size_t)y * pitch, src + (size_t)y * line_bytes,
+           line_bytes);
+  g_renderer_funcs.EndDraw();
+  NoteCompletedPresentation();
+  return true;
+}
+
+static void PresentationDebugToggle(void) {
+  if (g_presentation_debug_frozen) {
+    g_presentation_debug_frozen = false;
+    g_presentation_debug_step_live = false;
+    g_presentation_debug_cursor = 0;
+    return;
+  }
+  if (g_presentation_history_count == 0) {
+    fprintf(stderr, "[presentation] no retained frame to freeze yet\n");
+    return;
+  }
+  g_presentation_debug_frozen = true;
+  g_presentation_debug_step_live = false;
+  g_presentation_debug_cursor = 0;
+}
+
+static void PresentationDebugStepBack(void) {
+  if (!g_presentation_debug_frozen || g_presentation_history_count == 0)
+    return;
+  if (g_presentation_debug_cursor + 1u < g_presentation_history_count)
+    g_presentation_debug_cursor++;
+}
+
+static void PresentationDebugStepForward(void) {
+  if (!g_presentation_debug_frozen)
+    return;
+  if (g_presentation_debug_cursor > 0) {
+    g_presentation_debug_cursor--;
+    return;
+  }
+  g_presentation_debug_step_live = true;
+}
+
 #ifdef ENABLE_ORACLE_BACKEND
 /* Remap the runner's 12-bit per-player input word to the SNES hardware
  * joypad bit order the snes9x bridge expects. See the emu_oracle_run_frame
@@ -366,24 +502,48 @@ static void DrawPpuFrameWithPerf(void) {
   g_renderer_funcs.BeginDraw(g_snes_width * render_scale,
                              g_snes_height * render_scale,
                              &pixel_buffer, &pitch);
-  if (g_display_perf || g_config.display_perf_title) {
-    static float history[64], average;
-    static int history_pos;
-    uint64 before = SDL_GetPerformanceCounter();
-    RtlDrawPpuFrame(pixel_buffer, pitch, g_ppu_render_flags);
-    uint64 after = SDL_GetPerformanceCounter();
-    float v = (double)SDL_GetPerformanceFrequency() / (after - before);
-    average += v - history[history_pos];
-    history[history_pos] = v;
-    history_pos = (history_pos + 1) & 63;
-    g_curr_fps = average * (1.0f / 64);
-  } else {
-    RtlDrawPpuFrame(pixel_buffer, pitch, g_ppu_render_flags);
-  }
+  RtlDrawPpuFrame(pixel_buffer, pitch, g_ppu_render_flags);
   if (g_display_perf)
     RenderNumber(pixel_buffer + pitch * render_scale, pitch, g_curr_fps, render_scale == 4);
 
+  PresentationHistoryRecord(pixel_buffer, pitch);
   g_renderer_funcs.EndDraw();
+  NoteCompletedPresentation();
+}
+
+static bool ShouldPresentFrame(uint32 frame) {
+  switch (g_config.presentation_fps) {
+  case 20:
+    return ((frame - 1) % 3) == 0;
+  case 30:
+    return ((frame - 1) % 2) == 0;
+  case 60:
+  default:
+    return true;
+  }
+}
+
+static uint32 ExtraPresentationsAfterFrame(uint32 frame) {
+  const uint32 fps = g_config.presentation_fps;
+  if (fps <= 60)
+    return 0;
+  const uint32 previous = ((frame - 1u) * fps) / 60u;
+  const uint32 current = (frame * fps) / 60u;
+  return current > previous ? current - previous - 1u : 0;
+}
+
+static void DelayForDuplicatePresentation(void) {
+  const uint32 fps = g_config.presentation_fps;
+  if (fps <= 60)
+    return;
+  const uint32 delay = (1000u + fps / 2u) / fps;
+  if (delay)
+    SDL_Delay(delay);
+}
+
+static void DrawPpuFrameWithoutPresent(void) {
+  if (g_rtl_game_info && g_rtl_game_info->draw_ppu_frame)
+    g_rtl_game_info->draw_ppu_frame();
 }
 
 static SDL_mutex *g_audio_mutex;
@@ -493,8 +653,9 @@ static bool SdlRenderer_Init(SDL_Window *window) {
   /* SDL3 selects the driver by name and sets vsync separately, and dropped
    * SDL_RendererInfo entirely. snesrecomp_sdl_create_renderer() hides both. */
   const bool software = g_config.output_method == kOutputMethod_SDLSoftware;
+  const bool vsync = !software && g_config.presentation_fps <= 60;
   SDL_Renderer *renderer =
-      snesrecomp_sdl_create_renderer(g_window, software, !software);
+      snesrecomp_sdl_create_renderer(g_window, software, vsync);
   if (renderer == NULL) {
     printf("Failed to create renderer: %s\n", SDL_GetError());
     return false;
@@ -723,6 +884,11 @@ int main(int argc, char** argv) {
     framedump_dir = argv[1];
     argc -= 2, argv += 2;
   }
+  uint32 max_frames = 0;
+  if (argc >= 2 && strcmp(argv[0], "--frames") == 0) {
+    max_frames = (uint32)strtoul(argv[1], NULL, 0);
+    argc -= 2, argv += 2;
+  }
   int force_launcher = 0;
   if (argc >= 1 && strcmp(argv[0], "--launcher") == 0) {
     force_launcher = 1;
@@ -745,6 +911,7 @@ int main(int argc, char** argv) {
       g_config.output_method, g_config.new_renderer, g_config.window_scale,
       g_config.fullscreen, g_config.enable_audio, g_config.audio_freq,
       g_config.audio_samples);
+  g_display_perf = g_config.show_fps;
 
   /* Resolve the SNES ROM path: argv[0] -> rom.cfg cache -> file picker.
    * On success, replace argv so the existing ReadWholeFile + oracle init
@@ -764,7 +931,8 @@ int main(int argc, char** argv) {
 
 #if defined(SNES_LAUNCHER) || defined(RECOMP_LAUNCHER)
   {
-    int headless = start_paused || script_file != NULL || framedump_dir != NULL;
+    int headless = start_paused || script_file != NULL ||
+                   framedump_dir != NULL || max_frames != 0;
     int have_positional = argc >= 1 && argv[0] && argv[0][0] != '-' && argv[0][0];
     const char *no_launcher = getenv("SNESRECOMP_NO_LAUNCHER");
     int want_launcher = !headless && !have_positional && !(no_launcher && *no_launcher);
@@ -801,7 +969,7 @@ int main(int argc, char** argv) {
       settings.ignore_aspect = g_config.ignore_aspect_ratio;
       settings.linear_filter = g_config.linear_filtering;
       settings.widescreen = g_config.widescreen_extra != 0;
-      settings.widescreen_hud = 1;
+      settings.widescreen_hud = g_config.widescreen_hud ? 1 : 0;
       settings.enable_audio = g_config.enable_audio;
       settings.audio_freq = g_config.audio_freq;
       settings.volume = 100;
@@ -842,7 +1010,7 @@ int main(int argc, char** argv) {
       game_info.has_expected_crc = 1;
       game_info.known_sha256 = (const uint8_t (*)[32])&kStarFoxSha256;
       game_info.num_known_sha256 = 1;
-      game_info.widescreen_supported = 0;  /* WS not fully built for Star Fox yet — hide the toggle */
+      game_info.widescreen_supported = 1;  /* Supported fixed 16:9 path; ultrawide remains config-rejected. */
       game_info.msu1_supported = 0;
       game_info.sram_path = NULL;    /* Star Fox cart has no battery SRAM — hide SAVES */
       game_info.num_players = 1;     /* single-player — hide the Player 2 row */
@@ -871,6 +1039,7 @@ int main(int argc, char** argv) {
         g_config.ignore_aspect_ratio = settings.ignore_aspect != 0;
         g_config.linear_filtering = settings.linear_filter != 0;
         g_config.widescreen_extra = settings.widescreen ? 71 : 0;
+        g_config.widescreen_hud = settings.widescreen_hud != 0;
         g_config.enable_audio = settings.enable_audio != 0;
         g_config.audio_freq = (uint16)settings.audio_freq;
         g_config.enable_gamepad[0] = settings.player_src[0] == 2;
@@ -1307,6 +1476,13 @@ error_reading:;
       continue;
     }
 
+    if (g_presentation_debug_frozen && !g_presentation_debug_step_live) {
+      PresentationDebugPresentCurrent();
+      SDL_Delay(16);
+      continue;
+    }
+    g_presentation_debug_step_live = false;
+
     // Clear gamepad inputs when joypad directional inputs to avoid wonkiness
     if (g_input_state & 0xf0)
       g_gamepad[0].axis_buttons = 0;
@@ -1345,7 +1521,11 @@ error_reading:;
     uint32 inputs = g_input_state | g_pad_buttons | g_gamepad[0].axis_buttons | g_gamepad[1].axis_buttons << 12;
     inputs |= TickScript();
     inputs |= debug_server_get_controller_inputs();
-    RtlRunFrame(inputs | GetActiveControllers() | debug_server_get_controller_active_mask());
+    uint32 frame_inputs = inputs | GetActiveControllers() |
+                          debug_server_get_controller_active_mask();
+    StarFoxEnhancedPreFrame(frame_inputs);
+    RtlRunFrame(frame_inputs);
+    StarFoxEnhancedPostFrame(frame_inputs);
 
 #ifdef ENABLE_ORACLE_BACKEND
     // Step the oracle emulator with the same input. The runner's per-player
@@ -1369,14 +1549,26 @@ error_reading:;
     // Bank validation removed — 100% oracle mode, no banks enabled.
 
     frameCtr++;
+    if (max_frames && frameCtr >= max_frames)
+      running = false;
     if (frameCtr == 1)
       host_report_breadcrumb("first frame simulated");
     else if (frameCtr % 3600 == 0)   /* ~once a minute at 60 fps */
       host_report_breadcrumb("heartbeat: frame=%u", frameCtr);
     g_snes->disableRender = g_turbo && (frameCtr & 0xf) != 0;
 
-    if (!g_snes->disableRender)
-      DrawPpuFrameWithPerf();
+    if (!g_snes->disableRender) {
+      if (ShouldPresentFrame(frameCtr)) {
+        DrawPpuFrameWithPerf();
+        for (uint32 extra = ExtraPresentationsAfterFrame(frameCtr);
+             extra != 0; extra--) {
+          DelayForDuplicatePresentation();
+          PresentationDebugPresentCurrent();
+        }
+      } else {
+        DrawPpuFrameWithoutPresent();
+      }
+    }
 
     // if vsync isn't working, delay manually
     curTick = SDL_GetTicks();
@@ -1526,6 +1718,15 @@ static void HandleCommand(uint32 j, bool pressed) {
     case kKeys_ToggleRenderer:
       g_ppu_render_flags ^= kPpuRenderFlags_NewRenderer;
       printf("New renderer = %x\n", g_ppu_render_flags & kPpuRenderFlags_NewRenderer);
+      break;
+    case kKeys_PresentationDebug:
+      PresentationDebugToggle();
+      break;
+    case kKeys_PresentationStepForward:
+      PresentationDebugStepForward();
+      break;
+    case kKeys_PresentationStepBack:
+      PresentationDebugStepBack();
       break;
     case kKeys_VolumeUp:
     case kKeys_VolumeDown: HandleVolumeAdjustment(j == kKeys_VolumeUp ? 1 : -1); break;
@@ -1729,6 +1930,8 @@ static const char kDefaultSmwIniContent[] =
   "[General]\n"
   "# Automatically save state on quit and reload on start\n"
   "Autosave = 0\n"
+  "PresentationFPS = 60\n"
+  "ShowFPS = 0\n"
   "\n"
   "# Disable the SDL_Delay that happens each frame (slightly better\n"
   "# perf if your display is set to exactly 60hz)\n"
@@ -1754,6 +1957,19 @@ static const char kDefaultSmwIniContent[] =
   "# Remove the sprite limits per scan line\n"
   "NoSpriteLimits = 1\n"
   "Widescreen = 16:9\n"
+  "WidescreenHud = 1\n"
+  "WidescreenHudOamFirstSlot = 0\n"
+  "WidescreenHudOamSlots = 10\n"
+  "WidescreenHudOamHeight = 224\n"
+  "WidescreenHudLeftEnd = 64\n"
+  "WidescreenHudRightStart = 192\n"
+  "WidescreenHudBgY0 = 161\n"
+  "WidescreenHudBgY1 = 225\n"
+  "CrosshairColor = Original\n"
+  "\n"
+  "[Features]\n"
+  "GodMode = 0\n"
+  "GodNuke = 1\n"
   "\n"
   "[Sound]\n"
   "EnableAudio = 1\n"
@@ -1774,6 +1990,11 @@ static const char kDefaultSmwIniContent[] =
   "WindowSmaller = Ctrl+Down\n"
   "VolumeUp = Shift+=\n"
   "VolumeDown = Shift+-\n"
+  "DisplayPerf = f\n"
+  "ToggleRenderer = r\n"
+  "PresentationDebug = Ctrl+F5\n"
+  "PresentationStepForward = Ctrl+F6\n"
+  "PresentationStepBack = Ctrl+F7\n"
   "Load =      F1,     F2,     F3,     F4,     F5,     F6,     F7,     F8,     F9,     F10\n"
   "Save = Shift+F1,Shift+F2,Shift+F3,Shift+F4,Shift+F5,Shift+F6,Shift+F7,Shift+F8,Shift+F9,Shift+F10\n"
   "\n"
