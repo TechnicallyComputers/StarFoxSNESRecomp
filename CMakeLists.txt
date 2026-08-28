@@ -28,8 +28,12 @@ endif()
 
 add_library(StarFoxEnhancedNativeRenderer OBJECT
   src/starfox_enhanced_native.cpp
+  third_party/starfox-enhanced/src/assets/rom.cpp
+  third_party/starfox-enhanced/src/assets/shape_decoder.cpp
   third_party/starfox-enhanced/src/render/background_renderer.cpp
+  third_party/starfox-enhanced/src/render/software_renderer.cpp
   third_party/starfox-enhanced/src/render/sprite_renderer.cpp
+  third_party/starfox-enhanced/src/simulation/math.cpp
 )
 target_include_directories(StarFoxEnhancedNativeRenderer PRIVATE
   ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/recomp
@@ -51,7 +55,6 @@ add_executable(StarFoxSNESRecomp
   src/opengl.c
   src/post_mortem.c
   src/starfox_enhanced_renderer.c
-  src/starfox_native_shape.c
   src/starfox_mods.c
   src/starfox_cpu_infra.c
   src/starfox_rtl.c
@@ -63,6 +66,8 @@ add_executable(StarFoxSNESRecomp
 
 target_include_directories(StarFoxSNESRecomp PRIVATE
   ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/recomp
+  ${CMAKE_SOURCE_DIR}/third_party/stb
+  ${CMAKE_SOURCE_DIR}/recomp-ui/src/third_party
   ${CMAKE_SOURCE_DIR}/third_party/starfox-enhanced/include
   ${SNESRECOMP_RUNNER_INCLUDE_DIRS})
 target_compile_definitions(StarFoxSNESRecomp PRIVATE

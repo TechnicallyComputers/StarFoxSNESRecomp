@@ -5,8 +5,11 @@ extern "C" {
 #include "snes/ppu.h"
 }
 
+#include "starfox/assets/rom.hpp"
+#include "starfox/assets/shape_decoder.hpp"
 #include "starfox/render/background_renderer.hpp"
 #include "starfox/render/framebuffer.hpp"
+#include "starfox/render/software_renderer.hpp"
 #include "starfox/render/sprite_renderer.hpp"
 #include "starfox/simulation/snes_ppu.hpp"
 
@@ -16,6 +19,11 @@ extern "C" {
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace {
 
@@ -25,7 +33,84 @@ enum {
   kRamBg2Scroll = 0x19ca,
   kRamDoHofs = 0x19d0,
   kRamDoVofs = 0x19d1,
+  kRomDepthTables = 0x038f7a,
 };
+
+using ShapeCacheKey = std::uint32_t;
+
+struct NativeShapeAssets {
+  const std::uint8_t *rom_pointer{};
+  std::size_t rom_size{};
+  std::unique_ptr<starfox::assets::RomImage> rom;
+  std::unique_ptr<starfox::assets::ShapeDecoder> decoder;
+  std::unordered_map<ShapeCacheKey, starfox::assets::Shape> shapes;
+};
+
+static starfox::assets::SymbolMap native_symbol_map() {
+  return starfox::assets::SymbolMap::parse(
+      "SHADESTAB2_0 $038b0a\n"
+      "SHADESTAB2_1 $038b22\n"
+      "SHADESTAB2_2 $038b3a\n"
+      "SHADESTAB2_3 $038b52\n"
+      "DEPTHTABLES $038f7a\n"
+      "SINTAB $008b62\n"
+      "COSTAB $008ba2\n"
+      "SINTAB16 $008ca2\n"
+      "TEXTUREADDRTAB $038918\n"
+      "TEXTUREXYTAB $038a3e\n"
+      "ID_0_C $038213\n"
+      "NULLSHAPE $009500\n");
+}
+
+static NativeShapeAssets &shape_assets_for_rom(const std::uint8_t *rom,
+                                               std::size_t rom_size) {
+  static NativeShapeAssets assets;
+  if (assets.rom_pointer == rom && assets.rom_size == rom_size && assets.rom &&
+      assets.decoder) {
+    return assets;
+  }
+
+  std::vector<std::uint8_t> bytes(rom, rom + rom_size);
+  assets = {};
+  assets.rom_pointer = rom;
+  assets.rom_size = rom_size;
+  assets.rom =
+      std::make_unique<starfox::assets::RomImage>(std::move(bytes));
+  auto symbols = native_symbol_map();
+  assets.decoder =
+      std::make_unique<starfox::assets::ShapeDecoder>(*assets.rom, symbols);
+  return assets;
+}
+
+static const starfox::assets::Shape *cached_shape(NativeShapeAssets &assets,
+                                                  std::uint16_t shape_address,
+                                                  std::uint16_t colour_pointer,
+                                                  double source_depth) {
+  if (!assets.decoder)
+    return nullptr;
+  const auto base_key =
+      (static_cast<ShapeCacheKey>(shape_address) << 16u) | colour_pointer;
+  auto base = assets.shapes.find(base_key);
+  if (base == assets.shapes.end()) {
+    base = assets.shapes.emplace(base_key, assets.decoder->decode(
+                                               shape_address, {},
+                                               colour_pointer))
+               .first;
+  }
+  const auto selected = starfox::assets::ShapeDecoder::select_lod_pointer(
+      base->second.header, source_depth);
+  const auto shape_key =
+      (static_cast<ShapeCacheKey>(selected) << 16u) | colour_pointer;
+  auto shape = assets.shapes.find(shape_key);
+  if (shape == assets.shapes.end()) {
+    shape = assets.shapes.emplace(shape_key,
+                                  assets.decoder->decode_lod(
+                                      base->second.header, selected,
+                                      colour_pointer))
+                .first;
+  }
+  return &shape->second;
+}
 
 static std::uint16_t ram_word(std::uint32_t address) {
   return static_cast<std::uint16_t>(g_ram[address]) |
@@ -156,6 +241,21 @@ static std::size_t count_visible_pixels(
   return count;
 }
 
+static std::size_t count_visible_pixels(const std::uint8_t *pixels,
+                                        std::size_t pitch, int width,
+                                        int height) {
+  std::size_t count = 0;
+  for (int y = 0; y < height; y++) {
+    const auto *row = pixels + static_cast<std::size_t>(y) * pitch;
+    for (int x = 0; x < width; x++) {
+      const auto *p = row + static_cast<std::size_t>(x) * 4u;
+      if (p[0] || p[1] || p[2])
+        count++;
+    }
+  }
+  return count;
+}
+
 static void maybe_log_native_ppu(const Ppu *ppu,
                                  const starfox::simulation::SnesPpuState &state,
                                  std::uint16_t widescreen_extra,
@@ -271,4 +371,89 @@ extern "C" int StarFoxEnhancedDrawNativePpuLayers(uint8_t *pixels,
     return 0;
   write_bgra(framebuffer, ppu_state, g_ppu, pixels, pitch);
   return 1;
+}
+
+extern "C" int StarFoxEnhancedDrawNativeShape(
+    uint8_t *pixels, size_t pitch, int width, int height, const uint8_t *rom,
+    size_t rom_size, uint16_t shape_address,
+    const StarFoxEnhancedNativeShapePose *pose,
+    StarFoxEnhancedNativeShapeStats *stats) {
+  if (stats)
+    std::memset(stats, 0, sizeof(*stats));
+  if (!pixels || pitch < static_cast<std::size_t>(width) * 4u || width <= 0 ||
+      height <= 0 || !rom || rom_size == 0 || !pose || shape_address == 0u)
+    return 0;
+
+  try {
+    auto &assets = shape_assets_for_rom(rom, rom_size);
+    const auto *shape = cached_shape(assets, shape_address,
+                                     pose->colour_pointer, pose->z);
+    if (!shape)
+      return 0;
+
+    starfox::render::RenderSettings settings;
+    settings.colour_index_base = 7u * 16u;
+    const starfox::render::SoftwareRenderer renderer{settings};
+    starfox::render::Framebuffer shape_frame(
+        static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+    shape_frame.clear(0);
+
+    starfox::render::RenderPose render_pose;
+    render_pose.x = pose->x;
+    render_pose.y = pose->y;
+    render_pose.z = pose->z;
+    render_pose.pitch = pose->pitch;
+    render_pose.yaw = pose->yaw;
+    render_pose.roll = pose->roll;
+    render_pose.vanish_x =
+        static_cast<double>(pose->vanish_x) + pose->widescreen_extra;
+    render_pose.vanish_y = pose->vanish_y;
+    render_pose.animation_frame = pose->animation_frame;
+    render_pose.colour_frame = pose->colour_frame;
+    render_pose.texture_scroll_x = pose->texture_scroll_x;
+    render_pose.texture_scroll_y = pose->texture_scroll_y;
+    starfox::render::apply_source_depth_tables(
+        *assets.rom, kRomDepthTables, pose->depth_thresholds,
+        pose->depth_colours, pose->object_depth_offset, render_pose);
+
+    renderer.draw(*shape, render_pose, shape_frame, false);
+
+    std::size_t visible = 0;
+    const auto palette_level = brightness(g_ppu);
+    for (std::uint32_t y = 0; y < shape_frame.height(); y++) {
+      auto *row = pixels + static_cast<std::size_t>(y) * pitch;
+      for (std::uint32_t x = 0; x < shape_frame.width(); x++) {
+        const auto colour = shape_frame.get(x, y);
+        if (colour == 0u)
+          continue;
+        const auto cgram =
+            g_ppu ? g_ppu->cgram[colour] : static_cast<std::uint16_t>(0);
+        const std::uint8_t r = static_cast<std::uint8_t>(
+            (static_cast<std::uint16_t>(expand5(cgram)) * palette_level) /
+            15u);
+        const std::uint8_t g = static_cast<std::uint8_t>(
+            (static_cast<std::uint16_t>(expand5(cgram >> 5u)) *
+             palette_level) /
+            15u);
+        const std::uint8_t b = static_cast<std::uint8_t>(
+            (static_cast<std::uint16_t>(expand5(cgram >> 10u)) *
+             palette_level) /
+            15u);
+        auto *dst = row + static_cast<std::size_t>(x) * 4u;
+        dst[0] = b;
+        dst[1] = g;
+        dst[2] = r;
+        dst[3] = 0xff;
+        visible++;
+      }
+    }
+    if (stats)
+      stats->visible_pixels = static_cast<unsigned>(
+          std::min<std::size_t>(visible, UINT32_MAX));
+    return visible != 0 ? 1 : 0;
+  } catch (const std::exception &) {
+    if (stats)
+      stats->decode_failures++;
+    return 0;
+  }
 }
