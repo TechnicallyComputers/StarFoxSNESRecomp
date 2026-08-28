@@ -66,8 +66,9 @@ Implementation notes:
    `PSHIPFLAGS3 |= 0x08` before and after each frame's simulation call.
 3. `SPECWEPCNT` is floored at three with a word write, preserving higher counts
    gained from pickups.
-4. The launcher still does not expose this setting; it remains a config-only
-   mod until route and transition behavior are audited interactively.
+4. The shared recomp-ui Mods view exposes this setting through the built-in
+   Star Fox Enhanced mod provider. It still needs route and transition audits
+   before it should be treated as parity with the source port.
 
 This is feasible but higher-risk than crosshair color because it mutates game
 state.
@@ -130,14 +131,14 @@ Reviewed symbols:
 
 Recomp path:
 
-1. The launcher exposes the fixed 16:9 toggle backed by the current Super FX
-   replay renderer. `16:10`, `21:9`, `32:9`, and custom margins remain
-   config-only.
+1. The shared recomp-ui Mods view exposes Enhanced-style Display Mode presets
+   backed by the current Super FX replay renderer: `16:10`, `16:9`, `21:9`,
+   and `32:9`. Arbitrary custom margins remain config-only.
 2. `DisplayMode` config aliases now accept Enhanced's display modes:
    `0`/`4:3`, `1`/`16:9`, `2`/`16:10`, `3`/`21:9`, and `4`/`32:9`.
    The shared renderer/Super FX caps were raised so those modes are represented
    directly rather than clamped.
-3. `WidescreenHud` is now persistent and launcher-backed. It gates the
+3. `WidescreenHud` is now persistent and Mods-view-backed. It gates the
    existing HUD OAM/BG1 edge anchoring so users can choose widened-edge HUD
    placement or the original 4:3 HUD placement during widescreen gameplay.
 4. Advanced config keys now expose the Star Fox HUD anchor geometry:

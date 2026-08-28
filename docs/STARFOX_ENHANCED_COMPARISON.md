@@ -59,9 +59,14 @@ and comparison harness rather than a bulk import into shared snesrecomp code.
    per-element HUD layouts, EX mode, and Super Scope/mouse/free camera behavior
    are not implemented.
 
-6. Validation: in progress. The tools and native build validate without
+6. Launcher surfacing: in progress. The shared recomp-ui Mods view is enabled
+   for Star Fox and backed by a built-in config provider exposing the current
+   Enhanced-derived feature set: Display Mode, Widescreen HUD, Crosshair Color,
+   God Mode, God Nuke, Presentation FPS, and Show FPS.
+
+7. Validation: in progress. The tools and native build validate without
    committing generated symbol or ROM output; interactive route/boss audits are
-   still required before these mods should be surfaced in the launcher.
+   still required before these mods should be treated as Enhanced parity.
 
 ## Portable candidates
 
@@ -74,8 +79,11 @@ and comparison harness rather than a bulk import into shared snesrecomp code.
 2. Trusted widescreen mod path.
    Enhanced's separation of simulation timing from presentation reinforces the
    current approach: preserve the authoritative 20 Hz game state and expand only
-   the rendering/projection path. The local implementation already has this
-   core; the remaining work is validation and surfacing it as a supported mod.
+   the rendering/projection path. The current local PPU/Super FX replay
+   widescreen path is transitional. If a proper native Star Fox scene renderer
+   lands, it should become the opt-in enhanced renderer and the current
+   PPU-renderer widescreen hacks should stop being the primary supported
+   widescreen route.
 
 3. Presentation and diagnostics.
    Enhanced exposes selectable presentation rates and a visible performance
@@ -98,6 +106,26 @@ and comparison harness rather than a bulk import into shared snesrecomp code.
   architecture, not recomp framework components.
 - Star Fox EX and patch-built outputs must remain outside this repository unless
   their availability and licensing are verified separately.
+
+## Native renderer direction
+
+The long-term renderer plan should be split between framework and title work:
+
+1. Add a generic snesrecomp enhanced-renderer interface that can observe frame
+   boundaries, ROM/RAM state, input/config, and a title-owned projection buffer
+   without weakening the default console-accurate renderer.
+2. Implement Star Fox as the first opt-in plugin using reviewed symbols and the
+   pinned Enhanced renderer as a behavioral reference for Super FX transforms,
+   clipping, line colors, cockpit/HUD composition, and high-FPS interpolation.
+3. Keep the default PPU renderer intact for compatibility, debugging, and
+   regression comparison.
+4. Once the native Star Fox plugin is validated across routes, bosses, comms,
+   transitions, and captures, remove or demote the current PPU/Super FX
+   widescreen hacks from the user-facing path.
+
+This is expected to be per-game tuned at the renderer plugin layer. The useful
+shared work is the opt-in interface, diagnostics, frame pacing, and asset/state
+handoff; the actual Star Fox mesh/projection interpretation is title-specific.
 
 ## Next validation queue
 

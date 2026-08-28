@@ -12,6 +12,8 @@ include(${SNESRECOMP_ROOT}/runner/runner.cmake)
 # consumed as the ./recomp-ui submodule/junction) so every recomp game drives
 # ONE launcher repo. The former in-tree launcher_ng has been retired from the
 # engine in favour of this shared, console-agnostic launcher.
+set(RECOMP_UI_ENABLE_MODS ON CACHE BOOL
+    "Enable recomp-ui Mods view for Star Fox built-in Enhanced features" FORCE)
 include(${CMAKE_SOURCE_DIR}/recomp-ui/recomp_ui.cmake)
 
 find_package(OpenGL REQUIRED)
@@ -33,6 +35,7 @@ add_executable(StarFoxSNESRecomp
   src/main.c
   src/opengl.c
   src/post_mortem.c
+  src/starfox_mods.c
   src/starfox_cpu_infra.c
   src/starfox_rtl.c
   src/starfox_spc_player.c

@@ -28,6 +28,7 @@
 #include "framedump.h"
 #include "config.h"
 #include "util.h"
+#include "starfox_mods.h"
 #include "starfox_spc_player.h"
 
 #include "snes/snes.h"
@@ -935,7 +936,9 @@ int main(int argc, char** argv) {
                    framedump_dir != NULL || max_frames != 0;
     int have_positional = argc >= 1 && argv[0] && argv[0][0] != '-' && argv[0][0];
     const char *no_launcher = getenv("SNESRECOMP_NO_LAUNCHER");
-    int want_launcher = !headless && !have_positional && !(no_launcher && *no_launcher);
+    int want_launcher = !headless &&
+        (force_launcher ||
+         (!have_positional && !(no_launcher && *no_launcher)));
 
     if (want_launcher && g_config.skip_launcher && !force_launcher) {
       FILE *cached = fopen("rom.cfg", "r");
@@ -1010,11 +1013,14 @@ int main(int argc, char** argv) {
       game_info.has_expected_crc = 1;
       game_info.known_sha256 = (const uint8_t (*)[32])&kStarFoxSha256;
       game_info.num_known_sha256 = 1;
-      game_info.widescreen_supported = 1;  /* Supported fixed 16:9 path; ultrawide remains config-rejected. */
+      game_info.widescreen_supported = 1;  /* Launcher exposes fixed 16:9; ultrawide remains config-only. */
       game_info.msu1_supported = 0;
       game_info.sram_path = NULL;    /* Star Fox cart has no battery SRAM — hide SAVES */
       game_info.num_players = 1;     /* single-player — hide the Player 2 row */
       game_info.config_path = config_file ? config_file : "config.ini";
+#if defined(RECOMP_LAUNCHER)
+      game_info.mods = StarFoxLauncherModsProvider(&settings);
+#endif
 
 #if defined(RECOMP_LAUNCHER)
       /* cwd is anchored to the exe dir (snesrecomp_anchor_to_exe_dir above),
@@ -1038,7 +1044,11 @@ int main(int argc, char** argv) {
         g_config.fullscreen = (uint8)settings.fullscreen;
         g_config.ignore_aspect_ratio = settings.ignore_aspect != 0;
         g_config.linear_filtering = settings.linear_filter != 0;
-        g_config.widescreen_extra = settings.widescreen ? 71 : 0;
+        if (!settings.widescreen) {
+          g_config.widescreen_extra = 0;
+        } else if (g_config.widescreen_extra == 0) {
+          g_config.widescreen_extra = 71;
+        }
         g_config.widescreen_hud = settings.widescreen_hud != 0;
         g_config.enable_audio = settings.enable_audio != 0;
         g_config.audio_freq = (uint16)settings.audio_freq;
