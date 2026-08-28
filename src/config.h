@@ -54,6 +54,7 @@ typedef struct Config {
   int window_width;
   int window_height;
   bool new_renderer;
+  bool enhanced_renderer;
   bool ignore_aspect_ratio;
   uint8 fullscreen;
   uint8 window_scale;

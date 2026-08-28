@@ -471,6 +471,9 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
       }
     } else if (StringEqualsNoCase(key, "NewRenderer")) {
       return ParseBool(value, &g_config.new_renderer);
+    } else if (StringEqualsNoCase(key, "EnhancedRenderer") ||
+               StringEqualsNoCase(key, "NativeRenderer")) {
+      return ParseBool(value, &g_config.enhanced_renderer);
     } else if (StringEqualsNoCase(key, "IgnoreAspectRatio")) {
       return ParseBool(value, &g_config.ignore_aspect_ratio);
     } else if (StringEqualsNoCase(key, "Fullscreen")) {
@@ -804,6 +807,7 @@ void WriteConfigFile(const char *filename) {
     { "Graphics",   "WidescreenHudBgY0" },
     { "Graphics",   "WidescreenHudBgY1" },
     { "Graphics",   "CrosshairColor" },
+    { "Graphics",   "EnhancedRenderer" },
     { "Graphics",   "LinearFiltering" },
     { "Features",   "GodMode" },
     { "Features",   "GodNuke" },
@@ -862,25 +866,27 @@ void WriteConfigFile(const char *filename) {
                ? CrosshairColorName(g_config.crosshair_color)
                : CrosshairColorName(kCrosshairColor_Original));
   snprintf(kvs[14].val, sizeof(kvs[14].val), "%d",
-           g_config.linear_filtering ? 1 : 0);
+           g_config.enhanced_renderer ? 1 : 0);
   snprintf(kvs[15].val, sizeof(kvs[15].val), "%d",
-           g_config.god_mode ? 1 : 0);
+           g_config.linear_filtering ? 1 : 0);
   snprintf(kvs[16].val, sizeof(kvs[16].val), "%d",
-           g_config.god_nuke ? 1 : 0);
+           g_config.god_mode ? 1 : 0);
   snprintf(kvs[17].val, sizeof(kvs[17].val), "%d",
+           g_config.god_nuke ? 1 : 0);
+  snprintf(kvs[18].val, sizeof(kvs[18].val), "%d",
            g_config.enable_audio ? 1 : 0);
-  snprintf(kvs[18].val, sizeof(kvs[18].val), "%u", g_config.audio_freq);
-  snprintf(kvs[19].val, sizeof(kvs[19].val), "%s",
-           g_config.enable_gamepad[0] ? "true" : "false");
+  snprintf(kvs[19].val, sizeof(kvs[19].val), "%u", g_config.audio_freq);
   snprintf(kvs[20].val, sizeof(kvs[20].val), "%s",
+           g_config.enable_gamepad[0] ? "true" : "false");
+  snprintf(kvs[21].val, sizeof(kvs[21].val), "%s",
            g_config.enable_gamepad[1] ? "true" : "false");
-  snprintf(kvs[21].val, sizeof(kvs[21].val), "%d",
-           g_config.gamepad_deadzone);
   snprintf(kvs[22].val, sizeof(kvs[22].val), "%d",
-           g_config.presentation_fps ? g_config.presentation_fps : 60);
+           g_config.gamepad_deadzone);
   snprintf(kvs[23].val, sizeof(kvs[23].val), "%d",
-           g_config.show_fps ? 1 : 0);
+           g_config.presentation_fps ? g_config.presentation_fps : 60);
   snprintf(kvs[24].val, sizeof(kvs[24].val), "%d",
+           g_config.show_fps ? 1 : 0);
+  snprintf(kvs[25].val, sizeof(kvs[25].val), "%d",
            g_config.skip_launcher ? 1 : 0);
 
   char *data = NULL;

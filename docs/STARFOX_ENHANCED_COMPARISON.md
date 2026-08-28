@@ -62,9 +62,15 @@ and comparison harness rather than a bulk import into shared snesrecomp code.
 6. Launcher surfacing: in progress. The shared recomp-ui Mods view is enabled
    for Star Fox and backed by a built-in config provider exposing the current
    Enhanced-derived feature set: Display Mode, Widescreen HUD, Crosshair Color,
-   God Mode, God Nuke, Presentation FPS, and Show FPS.
+   Enhanced Renderer, God Mode, God Nuke, Presentation FPS, and Show FPS.
 
-7. Validation: in progress. The tools and native build validate without
+7. Enhanced-renderer scaffold: in progress. The shared `RtlGameInfo` contract
+   now has an optional title-owned `enhanced_render_frame` hook. Star Fox wires
+   it behind `EnhancedRenderer = 0` by default and currently uses it only as a
+   diagnostic native supplement drawn from annotated guest camera/vanish-point
+   state after the normal PPU renderer has produced the frame.
+
+8. Validation: in progress. The tools and native build validate without
    committing generated symbol or ROM output; interactive route/boss audits are
    still required before these mods should be treated as Enhanced parity.
 
@@ -113,7 +119,8 @@ The long-term renderer plan should be split between framework and title work:
 
 1. Add a generic snesrecomp enhanced-renderer interface that can observe frame
    boundaries, ROM/RAM state, input/config, and a title-owned projection buffer
-   without weakening the default console-accurate renderer.
+   without weakening the default console-accurate renderer. The first hook is
+   now present as an opt-in title callback from the host presentation buffer.
 2. Implement Star Fox as the first opt-in plugin using reviewed symbols and the
    pinned Enhanced renderer as a behavioral reference for Super FX transforms,
    clipping, line colors, cockpit/HUD composition, and high-FPS interpolation.

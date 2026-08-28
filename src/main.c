@@ -348,10 +348,37 @@ static SDL_HitTestResult HitTestCallback(SDL_Window *win, const SDL_Point *pt, v
   return SDL_HITTEST_NORMAL;
 }
 
-void RtlDrawPpuFrame(uint8 *pixel_buffer, size_t pitch, uint32 render_flags) {
+static void RtlDrawDefaultPpuFrame(uint8 *pixel_buffer, size_t pitch,
+                                   uint32 render_flags) {
   g_rtl_game_info->draw_ppu_frame();
   RtlWidescreenPresent(pixel_buffer, pitch, g_my_pixels, g_snes_width,
                        g_snes_height);
+}
+
+static RtlEnhancedRenderResult RtlTryEnhancedRenderFrame(
+    uint8 *pixel_buffer, size_t pitch, uint32 render_flags,
+    int default_renderer_done) {
+  if (!g_config.enhanced_renderer ||
+      !g_rtl_game_info || !g_rtl_game_info->enhanced_render_frame)
+    return kRtlEnhancedRender_NotHandled;
+  RtlEnhancedRendererFrame frame;
+  memset(&frame, 0, sizeof(frame));
+  frame.pixels = pixel_buffer;
+  frame.pitch = pitch;
+  frame.width = g_snes_width;
+  frame.height = g_snes_height;
+  frame.render_flags = render_flags;
+  frame.widescreen_extra = (uint16)g_ws_extra;
+  frame.default_renderer_done = default_renderer_done;
+  return g_rtl_game_info->enhanced_render_frame(&frame);
+}
+
+void RtlDrawPpuFrame(uint8 *pixel_buffer, size_t pitch, uint32 render_flags) {
+  if (RtlTryEnhancedRenderFrame(pixel_buffer, pitch, render_flags, 0) ==
+      kRtlEnhancedRender_Handled)
+    return;
+  RtlDrawDefaultPpuFrame(pixel_buffer, pitch, render_flags);
+  RtlTryEnhancedRenderFrame(pixel_buffer, pitch, render_flags, 1);
 }
 
 static void NoteCompletedPresentation(void) {

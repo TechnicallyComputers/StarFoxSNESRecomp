@@ -180,11 +180,18 @@ Implementation notes:
 
 ## Framework candidate
 
-Enhanced's useful framework lesson is observability, not renderer code. The
-current snesrecomp tree already has frame-model notes, audio counters, frame
-fingerprints, debug-server history, and StarFoxSNESRecomp now has a bounded
-`--frames N` run mode for repeatable local captures. The concrete follow-up is
-a small title-neutral presentation diagnostics facade that reports:
+Enhanced's useful shared framework lesson is observability and opt-in extension
+points, not generic renderer code. The current snesrecomp tree already has
+frame-model notes, audio counters, frame fingerprints, debug-server history,
+and StarFoxSNESRecomp now has a bounded `--frames N` run mode for repeatable
+local captures. The first renderer-facing extension is
+`RtlGameInfo.enhanced_render_frame`, which lets a title replace or supplement a
+host presentation buffer only when the game explicitly enables it. Star Fox's
+current implementation is a diagnostic supplement, not a replacement for the
+Enhanced native renderer.
+
+The concrete follow-up is a small title-neutral presentation diagnostics facade
+that reports:
 
 - simulated frame count;
 - rendered/presented frame count;

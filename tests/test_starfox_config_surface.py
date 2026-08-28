@@ -33,6 +33,7 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
         self.assertIn("extra <= kWsExtraMax", config_c)
         config_h = (ROOT / "src" / "config.h").read_text(encoding="utf-8")
         self.assertIn("uint16 widescreen_extra", config_h)
+        self.assertIn("bool enhanced_renderer", config_h)
         snes_widescreen_h = (
             ROOT / "snesrecomp" / "runner" / "src" / "widescreen.h"
         ).read_text(encoding="utf-8")
@@ -68,6 +69,7 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
         self.assertIn("g_config.widescreen_hud = settings.widescreen_hud != 0", main_c)
         self.assertIn("Display Mode", mods_c)
         self.assertIn("Widescreen HUD", mods_c)
+        self.assertIn("Enhanced Renderer", mods_c)
         self.assertIn("Crosshair Color", mods_c)
         self.assertIn("God Mode", mods_c)
         self.assertIn("God Nuke", mods_c)
@@ -80,6 +82,31 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
         self.assertIn("freq / 4", main_c)
         self.assertIn("PresentationHistoryRecord", main_c)
         self.assertIn("PresentationDebugPresentCurrent", main_c)
+
+    def test_enhanced_renderer_is_explicitly_opt_in(self):
+        config_ini = (ROOT / "config.ini").read_text(encoding="utf-8")
+        config_c = (ROOT / "src" / "config.c").read_text(encoding="utf-8")
+        main_c = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
+        game_info_c = (ROOT / "src" / "starfox_cpu_infra.c").read_text(encoding="utf-8")
+        renderer_c = (
+            ROOT / "src" / "starfox_enhanced_renderer.c"
+        ).read_text(encoding="utf-8")
+        infra_h = (
+            ROOT / "snesrecomp" / "runner" / "src" / "common_cpu_infra.h"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("EnhancedRenderer = 0", config_ini)
+        self.assertIn('"EnhancedRenderer"', config_c)
+        self.assertIn('"NativeRenderer"', config_c)
+        self.assertIn('"EnhancedRenderer" },', config_c)
+        self.assertIn("g_config.enhanced_renderer ? 1 : 0", config_c)
+        self.assertIn("RtlEnhancedRendererFrame", infra_h)
+        self.assertIn("enhanced_render_frame", infra_h)
+        self.assertIn(".enhanced_render_frame = &StarFoxEnhancedRenderFrame", game_info_c)
+        self.assertIn("g_config.enhanced_renderer", main_c)
+        self.assertIn("RtlDrawDefaultPpuFrame", main_c)
+        self.assertIn("StarFoxEnhancedRenderFrame", renderer_c)
+        self.assertIn("default_renderer_done", renderer_c)
 
     def test_presentation_debugger_keys_are_wired(self):
         config_h = (ROOT / "src" / "config.h").read_text(encoding="utf-8")

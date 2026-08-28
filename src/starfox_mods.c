@@ -23,6 +23,7 @@ typedef struct StarFoxModFeatureInfo {
 enum {
   kStarFoxModFeature_DisplayMode,
   kStarFoxModFeature_WidescreenHud,
+  kStarFoxModFeature_EnhancedRenderer,
   kStarFoxModFeature_CrosshairColor,
   kStarFoxModFeature_GodMode,
   kStarFoxModFeature_GodNuke,
@@ -48,6 +49,10 @@ static const StarFoxModFeatureInfo kStarFoxModFeatures[] = {
   {
     "widescreen_hud", "Widescreen HUD", "Display",
     "Anchor gameplay HUD elements to the expanded viewport edges."
+  },
+  {
+    "enhanced_renderer", "Enhanced Renderer", "Display",
+    "Enable the experimental native-renderer supplement for validation."
   },
   {
     "crosshair_color", "Crosshair Color", "Gameplay",
@@ -233,6 +238,8 @@ static bool feature_enabled(int index) {
   switch (index) {
   case kStarFoxModFeature_DisplayMode: return g_config.widescreen_extra != 0;
   case kStarFoxModFeature_WidescreenHud: return g_config.widescreen_hud;
+  case kStarFoxModFeature_EnhancedRenderer:
+    return g_config.enhanced_renderer;
   case kStarFoxModFeature_CrosshairColor:
     return g_config.crosshair_color != kCrosshairColor_Original;
   case kStarFoxModFeature_GodMode: return g_config.god_mode;
@@ -267,6 +274,9 @@ static int feature_enable(void *ctx, const char *package_id,
     break;
   case kStarFoxModFeature_WidescreenHud:
     g_config.widescreen_hud = enabled != 0;
+    break;
+  case kStarFoxModFeature_EnhancedRenderer:
+    g_config.enhanced_renderer = enabled != 0;
     break;
   case kStarFoxModFeature_CrosshairColor:
     g_config.crosshair_color =
