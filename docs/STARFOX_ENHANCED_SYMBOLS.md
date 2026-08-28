@@ -88,9 +88,18 @@ real routine entry.
 
 ## Cfg policy
 
-No `recomp/*.cfg` `func` or same-bank `name` lines were added in this pass.
-That is intentional: the Star Fox cfg currently contains only one explicitly
-recompiled function, and same-bank `name` entries auto-promote to emitted
-functions in snesrecomp v2. The next safe promotion step is a boundary report
-that proves which reviewed ROM symbols are routine entries and which are data,
-shape headers, or strategy-table labels.
+`python tools/ingest_starfox_enhanced_symbols.py --root .` overlays the 7,947
+ROM symbols into `recomp/bank*.cfg` as `symbol <pc24> <name>` lines. The normal
+`tools/regen.sh` path runs this ingester before `v2_emit.py`, so the actual
+recomp consumes the pinned Star Fox Enhanced names during analysis and emission.
+
+These are deliberately not `func` or same-bank `name` directives. Star Fox
+Enhanced's generated table includes routine labels, branch labels, Super FX
+MARIO labels, shape headers, tables, text, and constants. In snesrecomp v2,
+same-bank `name` entries promote to emitted functions; blindly promoting this
+table would create bogus 65816 roots. `symbol` is a non-promoting overlay:
+it names an address when real analysis reaches it, while reachability and
+function boundaries remain under the recompiler's control.
+
+Hand-authored `func`, `name`, and `symbol` declarations outside the auto block
+win by address. The auto block is replaced wholesale on each ingest run.

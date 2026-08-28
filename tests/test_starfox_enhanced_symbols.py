@@ -5,9 +5,12 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "snesrecomp" / "recompiler"))
 
+import ingest_starfox_enhanced_symbols as ingest
 import starfox_enhanced_compare as compare
 import starfox_enhanced_symbols as symbols
+from v2.cfg_loader import load_bank_cfg
 
 
 class StarFoxEnhancedSymbolsTests(unittest.TestCase):
@@ -77,6 +80,43 @@ class StarFoxEnhancedSymbolsTests(unittest.TestCase):
 
         self.assertEqual(1, len(funcs))
         self.assertEqual(("LoadAudio", 0x03, 0xB109), (funcs[0].name, funcs[0].bank, funcs[0].addr))
+
+    def test_symbol_directive_does_not_promote_to_func(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cfg = Path(temp_dir) / "bank03.cfg"
+            cfg.write_text("bank = 03\nsymbol 03c000 NamedData\n", encoding="utf-8")
+
+            loaded = load_bank_cfg(str(cfg))
+
+        self.assertEqual([], loaded.entries)
+        self.assertEqual([(0x03C000, "NamedData")], [(s.addr_24, s.name) for s in loaded.symbols])
+
+    def test_ingest_writes_cfg_overlay_and_preserves_hand_declarations(self):
+        symbol_entries = symbols.parse_symbols_text(
+            "LoadAudio = $03B109\n"
+            "NewThing = $03C000\n"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            recomp = Path(temp_dir) / "recomp"
+            recomp.mkdir()
+            cfg = recomp / "bank03.cfg"
+            cfg.write_text(
+                "bank = 03\nfunc LoadAudio b109 end:b269\n",
+                encoding="utf-8",
+            )
+
+            summary = ingest.emit_per_bank(
+                symbols.filter_symbols(symbol_entries, {"rom"}),
+                recomp,
+                Path("SYMBOLS.TXT"),
+            )
+            content = cfg.read_text(encoding="utf-8")
+
+        self.assertEqual({"banks": 1, "symbols": 1, "suppressed": 1}, summary)
+        self.assertIn("func LoadAudio b109 end:b269", content)
+        self.assertNotIn("symbol 03b109 LoadAudio", content)
+        self.assertIn("symbol 03c000 NewThing", content)
+        self.assertIn(ingest.INGEST_BEGIN, content)
 
 
 if __name__ == "__main__":
