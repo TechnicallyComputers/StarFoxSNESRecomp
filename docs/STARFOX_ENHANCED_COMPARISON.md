@@ -7,10 +7,9 @@ where applicable, for the shared snesrecomp framework.
 ## Current local baseline
 
 StarFoxSNESRecomp currently boots the US v1.2 game and has basic coverage for
-attract, menus, route selection, training, and gameplay. The project already has
-a Super FX widescreen replay model in `src/starfox_rtl.c` and detailed notes in
-`docs/TRUE_WIDESCREEN.md`. The launcher still treats widescreen as hidden until
-the remaining route, spawn, culling, and HUD audits are complete.
+attract, menus, route selection, training, and gameplay. Star Fox-specific
+widescreen is now owned by the opt-in native renderer path documented in
+`docs/TRUE_WIDESCREEN.md`; the stock PPU path remains authentic 4:3.
 
 ## SMWDisX ecosystem lesson
 
@@ -54,21 +53,22 @@ and comparison harness rather than a bulk import into shared snesrecomp code.
    `ShowFPS` startup state, and the retained-frame presentation debugger have
    concrete recomp-side implementations. `PresentationFPS` supports 20/30/60
    render cadence and 90/120/240/360/480 duplicate-present scheduling.
-   21:9/32:9 ultrawide modes are accepted through config after raising the
-   shared renderer/Super FX caps. High-FPS transform interpolation, draggable
-   per-element HUD layouts, EX mode, and Super Scope/mouse/free camera behavior
-   are not implemented.
+   21:9/32:9 ultrawide modes are accepted through config, but only become the
+   effective output width when the native renderer is enabled. High-FPS
+   transform interpolation, draggable per-element HUD layouts, EX mode, and
+   Super Scope/mouse/free camera behavior are not implemented.
 
 6. Launcher surfacing: in progress. The shared recomp-ui Mods view is enabled
    for Star Fox and backed by a built-in config provider exposing the current
-   Enhanced-derived feature set: Display Mode, Widescreen HUD, Crosshair Color,
-   Enhanced Renderer, God Mode, God Nuke, Presentation FPS, and Show FPS.
+   Enhanced-derived feature set: Display Mode, Crosshair Color, Enhanced
+   Renderer, God Mode, God Nuke, Presentation FPS, and Show FPS.
 
 7. Enhanced-renderer scaffold: in progress. The shared `RtlGameInfo` contract
    now has an optional title-owned `enhanced_render_frame` hook. Star Fox wires
-   it behind `EnhancedRenderer = 0` by default and currently uses it only as a
-   diagnostic native supplement drawn from annotated guest camera/vanish-point
-   state after the normal PPU renderer has produced the frame.
+   it behind `EnhancedRenderer = 0` by default. When enabled, the hook owns the
+   presentation frame before the default presenter runs; the authentic 256-wide
+   PPU output is only a bounded center fallback while native Star Fox layers
+   are brought up.
 
 8. Validation: in progress. The tools and native build validate without
    committing generated symbol or ROM output; interactive route/boss audits are
@@ -85,11 +85,9 @@ and comparison harness rather than a bulk import into shared snesrecomp code.
 2. Trusted widescreen mod path.
    Enhanced's separation of simulation timing from presentation reinforces the
    current approach: preserve the authoritative 20 Hz game state and expand only
-   the rendering/projection path. The current local PPU/Super FX replay
-   widescreen path is transitional. If a proper native Star Fox scene renderer
-   lands, it should become the opt-in enhanced renderer and the current
-   PPU-renderer widescreen hacks should stop being the primary supported
-   widescreen route.
+   the rendering/projection path. The old local PPU/Super FX replay widescreen
+   path has been removed from Star Fox; future widescreen work belongs in the
+   native renderer.
 
 3. Presentation and diagnostics.
    Enhanced exposes selectable presentation rates and a visible performance
@@ -126,9 +124,8 @@ The long-term renderer plan should be split between framework and title work:
    clipping, line colors, cockpit/HUD composition, and high-FPS interpolation.
 3. Keep the default PPU renderer intact for compatibility, debugging, and
    regression comparison.
-4. Once the native Star Fox plugin is validated across routes, bosses, comms,
-   transitions, and captures, remove or demote the current PPU/Super FX
-   widescreen hacks from the user-facing path.
+4. Validate the native Star Fox renderer across routes, bosses, comms,
+   transitions, and captures before treating it as Enhanced parity.
 
 This is expected to be per-game tuned at the renderer plugin layer. The useful
 shared work is the opt-in interface, diagnostics, frame pacing, and asset/state

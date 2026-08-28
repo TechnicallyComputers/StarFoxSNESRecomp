@@ -66,10 +66,9 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
         self.assertIn("StarFoxLauncherModsProvider", main_c)
         self.assertIn("game_info.mods", main_c)
         self.assertIn("game_info.widescreen_supported = 1", main_c)
-        self.assertIn("settings.widescreen_hud = g_config.widescreen_hud ? 1 : 0", main_c)
-        self.assertIn("g_config.widescreen_hud = settings.widescreen_hud != 0", main_c)
+        self.assertIn("settings.widescreen_hud = 0", main_c)
         self.assertIn("Display Mode", mods_c)
-        self.assertIn("Widescreen HUD", mods_c)
+        self.assertNotIn("Widescreen HUD", mods_c)
         self.assertIn("Enhanced Renderer", mods_c)
         self.assertIn("Crosshair Color", mods_c)
         self.assertIn("God Mode", mods_c)
@@ -105,21 +104,45 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
         self.assertIn("enhanced_render_frame", infra_h)
         self.assertIn(".enhanced_render_frame = &StarFoxEnhancedRenderFrame", game_info_c)
         self.assertIn("g_config.enhanced_renderer", main_c)
+        self.assertIn("g_config.enhanced_renderer\n                   ? IntMin(g_config.widescreen_extra, kWsExtraMax)\n                   : 0", main_c)
         self.assertIn("RtlDrawDefaultPpuFrame", main_c)
         self.assertIn("StarFoxEnhancedRenderFrame", renderer_c)
         self.assertIn("default_renderer_done", renderer_c)
+        self.assertIn("StarFoxDrawPpuFrame();", renderer_c)
+        self.assertIn("copy_stock_center", renderer_c)
         self.assertIn("kGsuDrawList = 0x1960", renderer_c)
         self.assertIn("kGsuDlPtr = 0x0202", renderer_c)
-        self.assertIn("draw_gsu_draw_list_shapes", renderer_c)
-        self.assertIn("clear_side_margins", renderer_c)
+        self.assertIn("snapshot_gsu_draw_list", renderer_c)
+        self.assertIn("draw_snapshot_shapes", renderer_c)
         self.assertIn("protect_center_left", renderer_c)
+        self.assertIn("kDlColTab = 0x16", renderer_c)
+        self.assertIn("load_superfx_palette", renderer_c)
+        self.assertIn("SNESRECOMP_ENHANCED_RENDERER_STATS", renderer_c)
         native_shape_c = (
             ROOT / "src" / "starfox_native_shape.c"
         ).read_text(encoding="utf-8")
         self.assertIn("StarFoxNativeDrawShapeWireframe", native_shape_c)
         self.assertIn("kBspInit", native_shape_c)
         self.assertIn("kPointsX16", native_shape_c)
+        self.assertIn("fill_face", native_shape_c)
+        self.assertIn("filled_pixels", native_shape_c)
+        self.assertIn("face_bgra", native_shape_c)
         self.assertIn("focal", (ROOT / "third_party" / "starfox-enhanced" / "include" / "starfox" / "render" / "software_renderer.hpp").read_text(encoding="utf-8"))
+
+    def test_starfox_stock_renderer_has_no_widescreen_hacks(self):
+        rtl_c = (ROOT / "src" / "starfox_rtl.c").read_text(encoding="utf-8")
+        renderer_c = (
+            ROOT / "src" / "starfox_enhanced_renderer.c"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("PpuSetExtraSpace(g_ppu, 0)", rtl_c)
+        self.assertIn("PpuSetWidescreenLineEnhancer(g_ppu, NULL, NULL)", rtl_c)
+        self.assertNotIn("kSuperFxEnhancement_WidescreenLinearProjection", rtl_c)
+        self.assertNotIn("starfox_widescreen_line_enhancer", rtl_c)
+        self.assertNotIn("PpuSetExtraSpace(g_ppu, (uint16_t)g_ws_extra)", rtl_c)
+        self.assertNotIn("PpuSetMode2LayerCapture(g_ppu, g_ws_extra", rtl_c)
+        self.assertNotIn("superfx_latch_widescreen_frame", rtl_c)
+        self.assertNotIn("clear_side_margins", renderer_c)
 
     def test_presentation_debugger_keys_are_wired(self):
         config_h = (ROOT / "src" / "config.h").read_text(encoding="utf-8")
@@ -136,29 +159,20 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
             self.assertIn(f"kKeys_{name}", main_c)
         self.assertIn("kPresentationHistoryFrames = 120", main_c)
 
-    def test_widescreen_hud_control_gates_render_anchor(self):
+    def test_legacy_widescreen_hud_keys_are_parse_only(self):
         config_h = (ROOT / "src" / "config.h").read_text(encoding="utf-8")
         config_c = (ROOT / "src" / "config.c").read_text(encoding="utf-8")
         rtl_c = (ROOT / "src" / "starfox_rtl.c").read_text(encoding="utf-8")
+        config_ini = (ROOT / "config.ini").read_text(encoding="utf-8")
+        mods_c = (ROOT / "src" / "starfox_mods.c").read_text(encoding="utf-8")
 
         self.assertIn("bool widescreen_hud", config_h)
         self.assertIn('"WidescreenHud"', config_c)
-        self.assertIn("g_config.widescreen_hud = true", config_c)
-        self.assertIn("g_ws_extra && g_config.widescreen_hud && starfox_hud_active()", rtl_c)
-        for name in (
-            "WidescreenHudOamFirstSlot",
-            "WidescreenHudOamSlots",
-            "WidescreenHudOamHeight",
-            "WidescreenHudLeftEnd",
-            "WidescreenHudRightStart",
-            "WidescreenHudBgY0",
-            "WidescreenHudBgY1",
-        ):
-            self.assertIn(f'"{name}"', config_c)
-        self.assertIn("g_config.widescreen_hud_oam_slots = 10", config_c)
-        self.assertIn("g_config.widescreen_hud_bg_y0 = 161", config_c)
-        self.assertIn("PpuSetWsHudOamBand(g_ppu, g_config.widescreen_hud_oam_height", rtl_c)
-        self.assertIn("PpuSetWsHudOamShiftRange(g_ppu,", rtl_c)
+        self.assertNotIn("WidescreenHud =", config_ini)
+        self.assertNotIn("Widescreen HUD", mods_c)
+        self.assertNotIn("g_config.widescreen_hud", rtl_c)
+        self.assertNotIn("g_config.widescreen_hud_oam", rtl_c)
+        self.assertNotIn("PpuSetWsHudOamBand(g_ppu, g_config.widescreen_hud_oam_height", rtl_c)
 
 
 if __name__ == "__main__":

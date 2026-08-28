@@ -1,92 +1,48 @@
-# Star Fox true-widescreen rendering
+# Star Fox native widescreen rendering
 
-Star Fox does not have one framebuffer that can simply be widened. Gameplay
-combines three independently positioned sources:
+Star Fox widescreen is no longer a Star Fox-specific modification of the stock
+SNES renderer. The stock path renders the authentic 256x224 picture. Wider
+Star Fox output belongs exclusively to the opt-in native renderer path behind
+`EnhancedRenderer`.
 
-- BG1 contains the 224-pixel Super FX surface, centered at PPU x=16..239.
-- BG2 contains the Mode 2 landscape and uses offset-per-tile scrolling.
-- OAM contains several HUD elements while the lower part of BG1 contains the
-  remaining HUD meters, portraits, and radio text.
+## Contract
 
-## Why the old margins looked warped
+- Stock renderer: 256x224, no Star Fox Super FX replay widening, no Mode 2
+  side capture, no HUD/OAM anchoring, no side-margin post-processing.
+- Native renderer: owns the whole presentation framebuffer when enabled.
+  `DisplayMode`/`Widescreen` only changes the effective output width when
+  `EnhancedRenderer = 1`.
+- Compatibility: old `WidescreenHud*` config keys may still parse, but they are
+  not written by the default config path and are not consumed by Star Fox RTL.
 
-The earlier presentation copied reflected pixels from the authentic BG2
-scanline into the margins. Reflection preserves an edge color but reverses
-motion and perspective at that edge. Meanwhile, 3D objects came from separate
-Super FX replays with shifted projection centers. The reflected landscape and
-the newly projected objects therefore represented different cameras, which
-made objects appear to slide, detach from the ground, or travel too far.
+## Current Native Path
 
-The replay pixels were also copied as final RGB values after PPU composition.
-They bypassed the SNES color window, brightness, subscreen, and fixed-color
-math. Damage and explosion flashes consequently exposed hard seams at the
-native viewport boundaries.
+`StarFoxEnhancedRenderFrame` handles the frame before the default presenter runs.
+It clears the full target, asks `StarFoxDrawPpuFrame` for an authentic 256-wide
+center fallback, copies that center into the requested native framebuffer, and
+then draws decoded Star Fox shape geometry from the captured Super FX draw list.
 
-## Current rendering model
+That center fallback is intentionally bounded. It is not a widened PPU output
+and it does not populate the side margins. The side columns are either native
+renderer output or black.
 
-The widescreen path now:
+## PC Port Crosswalk
 
-1. Renders BG2 normally into the added PPU columns. This preserves its live
-   tilemap, scrolling, priority, and color math instead of reflecting a
-   completed scanline.
-2. Treats BG1 x=0..15 and x=240..255 as transparent framebuffer padding.
-   BG2 or a valid side-frustum polygon can therefore occupy those columns.
-3. Replays `RenderObjects` once with a 398-pixel projection center and clipping
-   range. A linear presentation surface gives Super FX `PLOT` and `RPIX` true
-   16-bit X coordinates instead of letting the hardware tile framebuffer wrap
-   at 256 pixels.
-4. Inserts only that replay's new side pixels into the PPU priority buffers
-   before composition. Native color windows, flashes, brightness, and
-   subscreen math then affect the entire scene uniformly.
-5. Leaves the authoritative center render and simulation untouched. The
-   coherent wide replay is presentation-only and is latched to the same
-   displayed frame as the native center. In particular, the Arwing is
-   projected once at the wide center instead of being duplicated by two
-   shifted cameras.
-6. Excludes the native-viewport HUD and effect subpasses from the replay.
-   Their normal 224-pixel results remain authoritative; letting their
-   framebuffer clears inherit the 398-pixel clip range produced the solid
-   side bands visible in earlier captures.
-7. Anchors HUD OAM slots 0..9 to the widened edges. In gameplay these are
-   bombs (0..2), lives (3..5), and shield text (6..9).
-8. Splits the lower BG1 HUD band into left, center, and right chunks. Meters
-   move with their OAM labels, while portraits and radio text stay centered.
+The pinned Star Fox Enhanced PC port separates simulation from presentation:
+the emulated game produces state, named draw points are intercepted, and host
+renderers compose a wider framebuffer from game-specific assets/state.
 
-At 16:9 the host output is 398x224. The native Super FX playfield remains
-224 pixels wide, while the presentation replay contributes 87 projected
-columns on each side (`71` host-margin pixels plus the original `16`-pixel BG1
-inset).
+| PC port source | Recomp counterpart | Status |
+|---|---|---|
+| `src/simulation/wdc65816.cpp` symbol lookup and draw interception | `recomp/bank*.cfg` `symbol` overlay plus `StarFoxEnhancedRenderFrame` | Symbols imported; draw-list snapshot in place |
+| `include/starfox/render/software_renderer.hpp` `RenderPose` | `StarFoxNativeShapePose` | Partial: position, rotation, vanish point, palette, animation |
+| `src/render/software_renderer.cpp` shape transform, source projection, clipping, BSP ordering, face fill | `src/starfox_native_shape.c` | Partial: shape decode, simple transform/project, fill, edges |
+| `src/render/background_renderer.cpp` BG1/BG2/BG3 native tile composition | none yet | Needed for full native scene ownership |
+| `src/render/sprite_renderer.cpp`, scaled text, particles, cockpit HUD | none/partial config hooks | Needed for HUD/text/effects parity |
+| timing interpolation in `tests/timing_tests.cpp` and simulation snapshots | presentation history and fixed duplicate-present scheduling | Not yet interpolation |
 
-All enhanced Super FX runtime behavior is opt-in. A title must first select
-`kSuperFxEnhancement_WidescreenLinearProjection` with
-`superfx_set_enhancement_mode`, then configure a specific task with
-`superfx_set_widescreen`. It may separately provide replay-only word filters.
-New Super FX cores default to `kSuperFxEnhancement_None`; merely supplying
-widescreen task parameters is inert in that mode. The architectural 8-bit
-PLOT/RPIX path and native framebuffer remain authoritative in either mode.
+## Validation Rule
 
-## Remaining gameplay question
-
-The wide `RenderObjects` pass widens projection and clipping for every object
-already submitted to the Super FX object list. Live captures confirm
-that objects outside the native 4:3 view are drawn in the side frustums.
-
-This does not, by itself, prove that every level's CPU-side spawn/despawn rule
-is independent of the old viewport. The available pinned disassembly is
-incomplete in the middle of the relevant Super FX object loop. Long-form route
-testing should therefore watch for objects that pop into existence exactly at
-x=16 or x=239; any such case needs a level/object-specific spawn-bound change,
-not another projection adjustment.
-
-## Validation
-
-- `build-ws-diag/StarFoxSNESRecomp.exe` builds with the SDL2 trace
-  configuration.
-- Corneria was replayed from boot through live gameplay at 398x224.
-- TCP-driven captures covered the launch tunnel, formation, close buildings,
-  rings, wingmates, damage/blanking frames, and objects crossing each former
-  4:3 edge.
-- HUD slots and lower BG1 meters were checked in render-time OAM captures.
-- A ten-checkpoint gameplay sequence covered transitions and full-frame dark
-  effects without a center/side color-math seam.
-- `snesrecomp/tests/ppu/run.ps1` passes.
+Any 16:9/21:9/32:9 capture with non-black garbage in the side columns is a
+native renderer bug. It should be fixed in the native compositor or its Star
+Fox state decode, not by re-enabling the old PPU/Super FX widescreen path.

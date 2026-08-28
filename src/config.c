@@ -798,14 +798,6 @@ void WriteConfigFile(const char *filename) {
     { "Graphics",   "Fullscreen" },
     { "Graphics",   "IgnoreAspectRatio" },
     { "Graphics",   "Widescreen" },
-    { "Graphics",   "WidescreenHud" },
-    { "Graphics",   "WidescreenHudOamFirstSlot" },
-    { "Graphics",   "WidescreenHudOamSlots" },
-    { "Graphics",   "WidescreenHudOamHeight" },
-    { "Graphics",   "WidescreenHudLeftEnd" },
-    { "Graphics",   "WidescreenHudRightStart" },
-    { "Graphics",   "WidescreenHudBgY0" },
-    { "Graphics",   "WidescreenHudBgY1" },
     { "Graphics",   "CrosshairColor" },
     { "Graphics",   "EnhancedRenderer" },
     { "Graphics",   "LinearFiltering" },
@@ -846,47 +838,31 @@ void WriteConfigFile(const char *filename) {
              g_config.widescreen_extra);
   }
   snprintf(kvs[5].val, sizeof(kvs[5].val), "%s",
-           g_config.widescreen_hud ? "1" : "0");
-  snprintf(kvs[6].val, sizeof(kvs[6].val), "%u",
-           g_config.widescreen_hud_oam_first_slot);
-  snprintf(kvs[7].val, sizeof(kvs[7].val), "%u",
-           g_config.widescreen_hud_oam_slots);
-  snprintf(kvs[8].val, sizeof(kvs[8].val), "%u",
-           g_config.widescreen_hud_oam_height);
-  snprintf(kvs[9].val, sizeof(kvs[9].val), "%u",
-           g_config.widescreen_hud_left_end);
-  snprintf(kvs[10].val, sizeof(kvs[10].val), "%u",
-           g_config.widescreen_hud_right_start);
-  snprintf(kvs[11].val, sizeof(kvs[11].val), "%u",
-           g_config.widescreen_hud_bg_y0);
-  snprintf(kvs[12].val, sizeof(kvs[12].val), "%u",
-           g_config.widescreen_hud_bg_y1);
-  snprintf(kvs[13].val, sizeof(kvs[13].val), "%s",
            g_config.crosshair_color < kCrosshairColor_Count
                ? CrosshairColorName(g_config.crosshair_color)
                : CrosshairColorName(kCrosshairColor_Original));
-  snprintf(kvs[14].val, sizeof(kvs[14].val), "%d",
+  snprintf(kvs[6].val, sizeof(kvs[6].val), "%d",
            g_config.enhanced_renderer ? 1 : 0);
-  snprintf(kvs[15].val, sizeof(kvs[15].val), "%d",
+  snprintf(kvs[7].val, sizeof(kvs[7].val), "%d",
            g_config.linear_filtering ? 1 : 0);
-  snprintf(kvs[16].val, sizeof(kvs[16].val), "%d",
+  snprintf(kvs[8].val, sizeof(kvs[8].val), "%d",
            g_config.god_mode ? 1 : 0);
-  snprintf(kvs[17].val, sizeof(kvs[17].val), "%d",
+  snprintf(kvs[9].val, sizeof(kvs[9].val), "%d",
            g_config.god_nuke ? 1 : 0);
-  snprintf(kvs[18].val, sizeof(kvs[18].val), "%d",
+  snprintf(kvs[10].val, sizeof(kvs[10].val), "%d",
            g_config.enable_audio ? 1 : 0);
-  snprintf(kvs[19].val, sizeof(kvs[19].val), "%u", g_config.audio_freq);
-  snprintf(kvs[20].val, sizeof(kvs[20].val), "%s",
+  snprintf(kvs[11].val, sizeof(kvs[11].val), "%u", g_config.audio_freq);
+  snprintf(kvs[12].val, sizeof(kvs[12].val), "%s",
            g_config.enable_gamepad[0] ? "true" : "false");
-  snprintf(kvs[21].val, sizeof(kvs[21].val), "%s",
+  snprintf(kvs[13].val, sizeof(kvs[13].val), "%s",
            g_config.enable_gamepad[1] ? "true" : "false");
-  snprintf(kvs[22].val, sizeof(kvs[22].val), "%d",
+  snprintf(kvs[14].val, sizeof(kvs[14].val), "%d",
            g_config.gamepad_deadzone);
-  snprintf(kvs[23].val, sizeof(kvs[23].val), "%d",
+  snprintf(kvs[15].val, sizeof(kvs[15].val), "%d",
            g_config.presentation_fps ? g_config.presentation_fps : 60);
-  snprintf(kvs[24].val, sizeof(kvs[24].val), "%d",
+  snprintf(kvs[16].val, sizeof(kvs[16].val), "%d",
            g_config.show_fps ? 1 : 0);
-  snprintf(kvs[25].val, sizeof(kvs[25].val), "%d",
+  snprintf(kvs[17].val, sizeof(kvs[17].val), "%d",
            g_config.skip_launcher ? 1 : 0);
 
   char *data = NULL;

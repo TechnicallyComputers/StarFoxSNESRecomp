@@ -32,6 +32,7 @@ enum {
   kDlY = 0x10,
   kDlX = 0x12,
   kDlZ = 0x14,
+  kDlColTab = 0x16,
   kDlAnimFrame = 0x19,
   kShapeNull = 0x9500,
   kAsfShadowShape = 0x04,
@@ -39,6 +40,44 @@ enum {
   kAsfScaledSprite = 0x20,
   kAsfTextObj = 0x40,
 };
+
+typedef struct NativeDrawEntry {
+  uint16_t shape;
+  int16_t x;
+  int16_t y;
+  int16_t z;
+  uint16_t colour_pointer;
+  uint8_t pitch;
+  uint8_t yaw;
+  uint8_t roll;
+  uint8_t flags;
+  uint8_t animation_frame;
+} NativeDrawEntry;
+
+typedef struct NativeDrawSnapshot {
+  int valid;
+  int16_t vanish_x;
+  int16_t vanish_y;
+  unsigned shape_count;
+  unsigned entry_count;
+  NativeDrawEntry entries[kObjCount];
+} NativeDrawSnapshot;
+
+typedef struct NativeRendererStats {
+  unsigned entries;
+  unsigned candidates;
+  unsigned drawn;
+  unsigned vertices;
+  unsigned faces;
+  unsigned filled_faces;
+  unsigned filled_pixels;
+  unsigned lines;
+  unsigned line_pixels;
+} NativeRendererStats;
+
+static NativeDrawSnapshot g_native_snapshot;
+
+void StarFoxDrawPpuFrame(void);
 
 static uint16_t ram_word(uint32_t address) {
   return (uint16_t)g_ram[address] | ((uint16_t)g_ram[address + 1] << 8);
@@ -81,6 +120,26 @@ static void put_bgra(uint8_t *pixels, size_t pitch, int width, int height,
   p[1] = g;
   p[2] = r;
   p[3] = 0xff;
+}
+
+static uint32_t cgram_bgra(uint16_t color) {
+  const uint8_t r5 = color & 0x1f;
+  const uint8_t g5 = (color >> 5) & 0x1f;
+  const uint8_t b5 = (color >> 10) & 0x1f;
+  const uint8_t r = (uint8_t)((r5 << 3) | (r5 >> 2));
+  const uint8_t g = (uint8_t)((g5 << 3) | (g5 >> 2));
+  const uint8_t b = (uint8_t)((b5 << 3) | (b5 >> 2));
+  return (uint32_t)b | ((uint32_t)g << 8) | ((uint32_t)r << 16) |
+         0xff000000u;
+}
+
+static void load_superfx_palette(uint32_t out[16]) {
+  for (unsigned i = 0; i < 16; i++)
+    out[i] = 0;
+  if (!g_ppu)
+    return;
+  for (unsigned i = 0; i < 16; i++)
+    out[i] = cgram_bgra(g_ppu->cgram[7u * 16u + i]);
 }
 
 static void draw_line_h(uint8_t *pixels, size_t pitch, int width, int height,
@@ -175,72 +234,162 @@ static bool debug_probe_enabled(void) {
   return enabled != 0;
 }
 
-static unsigned draw_gsu_draw_list_shapes(uint8_t *pixels, size_t pitch,
-                                          int width, int height,
-                                          uint16_t ws_extra) {
+static bool renderer_stats_enabled(void) {
+  static int checked;
+  static int enabled;
+  if (!checked) {
+    const char *env = getenv("SNESRECOMP_ENHANCED_RENDERER_STATS");
+    enabled = env && *env && strcmp(env, "0") != 0;
+    checked = 1;
+  }
+  return enabled != 0;
+}
+
+static void add_shape_stats(NativeRendererStats *total,
+                            const StarFoxNativeShapeStats *shape) {
+  if (!total || !shape)
+    return;
+  total->vertices += shape->vertices;
+  total->faces += shape->faces;
+  total->filled_faces += shape->filled_faces;
+  total->filled_pixels += shape->filled_pixels;
+  total->lines += shape->lines;
+  total->line_pixels += shape->line_pixels;
+}
+
+static void log_renderer_stats(const NativeRendererStats *stats,
+                               uint16_t ws_extra, int width, int height) {
+  if (!stats || !renderer_stats_enabled())
+    return;
+  extern int snes_frame_counter;
+  if ((snes_frame_counter % 30) != 0)
+    return;
+  fprintf(stderr,
+          "[starfox-native] frame=%d size=%dx%d ws_extra=%u snapshot=%u/%u "
+          "entries=%u candidates=%u drawn=%u vertices=%u faces=%u "
+          "filled_faces=%u filled_pixels=%u lines=%u line_pixels=%u\n",
+          snes_frame_counter, width, height, ws_extra,
+          g_native_snapshot.entry_count, g_native_snapshot.shape_count,
+          stats->entries, stats->candidates, stats->drawn, stats->vertices,
+          stats->faces, stats->filled_faces, stats->filled_pixels,
+          stats->lines, stats->line_pixels);
+}
+
+static void snapshot_gsu_draw_list(void) {
   Cart *cart = g_snes ? g_snes->cart : NULL;
   SuperFx *fx = cart ? cart->superfx : NULL;
-  if (!ws_extra || !cart || !cart->rom || !cart->romSize || !fx || !fx->ram ||
-      !fx->ram_size || !pixels)
-    return 0;
+  memset(&g_native_snapshot, 0, sizeof(g_native_snapshot));
+  if (!cart || !cart->rom || !cart->romSize || !fx || !fx->ram ||
+      !fx->ram_size)
+    return;
 
-  const int16_t vanish_x = (int16_t)gsu_word(kGsuVanishX);
-  const int16_t vanish_y = (int16_t)gsu_word(kGsuVanishY);
   const unsigned shape_count = gsu_word(kGsuNumShapes);
   uint16_t pointer = gsu_word(kGsuDlPtr);
-  unsigned drawn = 0;
   if (!shape_count || shape_count > kObjCount ||
       !draw_list_pointer_valid(pointer, shape_count, fx->ram_size))
-    return 0;
+    return;
 
+  g_native_snapshot.valid = 1;
+  g_native_snapshot.vanish_x = (int16_t)gsu_word(kGsuVanishX);
+  g_native_snapshot.vanish_y = (int16_t)gsu_word(kGsuVanishY);
+  g_native_snapshot.shape_count = shape_count;
   for (unsigned visited = 0; pointer != 0 && visited < shape_count; visited++) {
     if (!draw_list_pointer_valid(pointer, shape_count, fx->ram_size))
       break;
+    NativeDrawEntry *entry =
+        &g_native_snapshot.entries[g_native_snapshot.entry_count++];
     const uint16_t next = gsu_word((uint16_t)(pointer + kDlNext));
-    const uint8_t flags = gsu_byte((uint16_t)(pointer + kDlSFlags));
-    const uint16_t shape = gsu_word((uint16_t)(pointer + kDlShape));
-    if (shape != 0 && shape != kShapeNull &&
-        (flags & (kAsfShadowShape | kAsfPartObj | kAsfScaledSprite |
-                  kAsfTextObj)) == 0) {
+    entry->flags = gsu_byte((uint16_t)(pointer + kDlSFlags));
+    entry->shape = gsu_word((uint16_t)(pointer + kDlShape));
+    entry->x = gsu_i16((uint16_t)(pointer + kDlX));
+    entry->y = gsu_i16((uint16_t)(pointer + kDlY));
+    entry->z = gsu_i16((uint16_t)(pointer + kDlZ));
+    entry->pitch = gsu_byte((uint16_t)(pointer + kDlRotX));
+    entry->yaw = gsu_byte((uint16_t)(pointer + kDlRotY));
+    entry->roll = gsu_byte((uint16_t)(pointer + kDlRotZ));
+    entry->colour_pointer = gsu_word((uint16_t)(pointer + kDlColTab));
+    entry->animation_frame =
+        gsu_byte((uint16_t)(pointer + kDlAnimFrame)) & 0x7f;
+    pointer = next;
+  }
+  if (!g_native_snapshot.entry_count)
+    memset(&g_native_snapshot, 0, sizeof(g_native_snapshot));
+}
+
+static unsigned draw_snapshot_shapes(uint8_t *pixels, size_t pitch,
+                                     int width, int height, uint16_t ws_extra,
+                                     NativeRendererStats *renderer_stats) {
+  Cart *cart = g_snes ? g_snes->cart : NULL;
+  if (!ws_extra || !g_native_snapshot.valid || !cart || !cart->rom ||
+      !cart->romSize || !pixels)
+    return 0;
+
+  unsigned drawn = 0;
+  for (unsigned i = 0; i < g_native_snapshot.entry_count; i++) {
+    const NativeDrawEntry *entry = &g_native_snapshot.entries[i];
+    if (renderer_stats)
+      renderer_stats->entries++;
+    if (entry->shape != 0 && entry->shape != kShapeNull &&
+        (entry->flags & (kAsfShadowShape | kAsfPartObj | kAsfScaledSprite |
+                         kAsfTextObj)) == 0) {
       StarFoxNativeShapePose pose;
       StarFoxNativeShapeStats stats;
+      if (renderer_stats)
+        renderer_stats->candidates++;
       memset(&pose, 0, sizeof(pose));
-      pose.x = gsu_i16((uint16_t)(pointer + kDlX));
-      pose.y = gsu_i16((uint16_t)(pointer + kDlY));
-      pose.z = gsu_i16((uint16_t)(pointer + kDlZ));
-      pose.pitch = (uint16_t)gsu_byte((uint16_t)(pointer + kDlRotX)) << 8;
-      pose.yaw = (uint16_t)gsu_byte((uint16_t)(pointer + kDlRotY)) << 8;
-      pose.roll = (uint16_t)gsu_byte((uint16_t)(pointer + kDlRotZ)) << 8;
-      pose.vanish_x = vanish_x;
-      pose.vanish_y = vanish_y;
-      pose.animation_frame = gsu_byte((uint16_t)(pointer + kDlAnimFrame)) & 0x7f;
+      pose.x = entry->x;
+      pose.y = entry->y;
+      pose.z = entry->z;
+      pose.pitch = (uint16_t)entry->pitch << 8;
+      pose.yaw = (uint16_t)entry->yaw << 8;
+      pose.roll = (uint16_t)entry->roll << 8;
+      pose.vanish_x = g_native_snapshot.vanish_x;
+      pose.vanish_y = g_native_snapshot.vanish_y;
+      pose.colour_pointer = entry->colour_pointer;
+      pose.animation_frame = entry->animation_frame;
       pose.widescreen_extra = ws_extra;
       pose.protect_center_left = (int)ws_extra;
       pose.protect_center_right = (int)ws_extra + 256;
-      if (StarFoxNativeDrawShapeWireframe(cart->rom, cart->romSize, shape,
+      load_superfx_palette(pose.palette_bgra);
+      if (StarFoxNativeDrawShapeWireframe(cart->rom, cart->romSize,
+                                          entry->shape,
                                           &pose, pixels, pitch, width, height,
                                           &stats)) {
         drawn++;
+        if (renderer_stats)
+          renderer_stats->drawn++;
       }
+      add_shape_stats(renderer_stats, &stats);
     }
-    pointer = next;
   }
   return drawn;
 }
 
-static void clear_side_margins(uint8_t *pixels, size_t pitch, int width,
-                               int height, uint16_t ws_extra) {
-  if (!ws_extra || !pixels || width <= 0 || height <= 0)
+static void clear_frame(uint8_t *pixels, size_t pitch, int width, int height) {
+  if (!pixels || width <= 0 || height <= 0)
     return;
-  const int center_left = (int)ws_extra;
-  const int center_right = center_left + 256;
-  for (int y = 0; y < height; y++) {
-    uint8_t *row = pixels + (size_t)y * pitch;
-    if (center_left > 0)
-      memset(row, 0, (size_t)center_left * 4u);
-    if (center_right < width)
-      memset(row + (size_t)center_right * 4u, 0,
-             (size_t)(width - center_right) * 4u);
+  for (int y = 0; y < height; y++)
+    memset(pixels + (size_t)y * pitch, 0, (size_t)width * 4u);
+}
+
+static void copy_stock_center(const RtlEnhancedRendererFrame *frame) {
+  if (!frame || !frame->pixels || !g_ppu || !g_ppu->renderBuffer ||
+      !g_ppu->renderPitch || frame->width <= 0 || frame->height <= 0)
+    return;
+  const int copy_width = frame->width - (int)frame->widescreen_extra >= 256
+                             ? 256
+                             : frame->width;
+  const int dst_left =
+      frame->width >= 256 + 2 * (int)frame->widescreen_extra
+          ? (int)frame->widescreen_extra
+          : 0;
+  if (copy_width <= 0 || dst_left < 0 || dst_left + copy_width > frame->width)
+    return;
+  const int copy_height = frame->height < 224 ? frame->height : 224;
+  for (int y = 0; y < copy_height; y++) {
+    memcpy(frame->pixels + (size_t)y * frame->pitch + (size_t)dst_left * 4u,
+           g_ppu->renderBuffer + (size_t)y * g_ppu->renderPitch,
+           (size_t)copy_width * 4u);
   }
 }
 
@@ -299,30 +448,26 @@ static void maybe_dump_frame(const RtlEnhancedRendererFrame *frame) {
 
 RtlEnhancedRenderResult StarFoxEnhancedRenderFrame(
     RtlEnhancedRendererFrame *frame) {
-  if (!frame || !frame->default_renderer_done)
+  if (!frame)
     return kRtlEnhancedRender_NotHandled;
-  clear_side_margins(frame->pixels, frame->pitch, frame->width, frame->height,
-                     frame->widescreen_extra);
-  unsigned drawn = draw_gsu_draw_list_shapes(
+  if (frame->default_renderer_done)
+    return kRtlEnhancedRender_Handled;
+  snapshot_gsu_draw_list();
+  clear_frame(frame->pixels, frame->pitch, frame->width, frame->height);
+  StarFoxDrawPpuFrame();
+  copy_stock_center(frame);
+  if (!g_native_snapshot.valid)
+    snapshot_gsu_draw_list();
+  NativeRendererStats stats;
+  memset(&stats, 0, sizeof(stats));
+  unsigned drawn = draw_snapshot_shapes(
       frame->pixels, frame->pitch, frame->width, frame->height,
-      frame->widescreen_extra);
-  if (g_ppu && g_ppu->renderBuffer && g_ppu->renderPitch &&
-      g_ppu->renderBuffer != frame->pixels) {
-    const int ppu_width = 256 + 2 * g_ppu->extraLeftRight;
-    clear_side_margins(g_ppu->renderBuffer, g_ppu->renderPitch, ppu_width, 224,
-                       g_ppu->extraLeftRight);
-    drawn += draw_gsu_draw_list_shapes(g_ppu->renderBuffer, g_ppu->renderPitch,
-                                       ppu_width, 224, g_ppu->extraLeftRight);
-  }
+      frame->widescreen_extra, &stats);
+  log_renderer_stats(&stats, frame->widescreen_extra, frame->width,
+                     frame->height);
   if (!drawn && debug_probe_enabled()) {
     draw_debug_probe(frame->pixels, frame->pitch, frame->width, frame->height,
                      frame->widescreen_extra);
-    if (g_ppu && g_ppu->renderBuffer && g_ppu->renderPitch &&
-        g_ppu->renderBuffer != frame->pixels) {
-      const int ppu_width = 256 + 2 * g_ppu->extraLeftRight;
-      draw_debug_probe(g_ppu->renderBuffer, g_ppu->renderPitch, ppu_width, 224,
-                       g_ppu->extraLeftRight);
-    }
   }
   maybe_dump_frame(frame);
   return kRtlEnhancedRender_Handled;

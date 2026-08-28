@@ -113,10 +113,10 @@ state and depends on route/boss-specific scripts.
 
 ## Widescreen graduation
 
-Enhanced reinforces the current local architecture: keep gameplay simulation at
-the original tick rate and expand presentation/projection only. The recomp
-already has a Super FX replay-based widescreen path. The remaining work is not
-a code import; it is validation.
+Enhanced reinforces the renderer split: keep gameplay simulation at the
+original tick rate and expand presentation/projection only. Star Fox no longer
+uses a PPU/Super FX replay widescreen path; widescreen output is owned by the
+opt-in native renderer.
 
 Reviewed symbols:
 
@@ -131,27 +131,19 @@ Reviewed symbols:
 
 Recomp path:
 
-1. The shared recomp-ui Mods view exposes Enhanced-style Display Mode presets
-   backed by the current Super FX replay renderer: `16:10`, `16:9`, `21:9`,
-   and `32:9`. Arbitrary custom margins remain config-only.
+1. The shared recomp-ui Mods view exposes Enhanced-style Display Mode presets:
+   `16:10`, `16:9`, `21:9`, and `32:9`. Selecting a wide mode enables the
+   native renderer because Star Fox stock rendering is always 4:3.
 2. `DisplayMode` config aliases now accept Enhanced's display modes:
    `0`/`4:3`, `1`/`16:9`, `2`/`16:10`, `3`/`21:9`, and `4`/`32:9`.
    The shared renderer/Super FX caps were raised so those modes are represented
    directly rather than clamped.
-3. `WidescreenHud` is now persistent and Mods-view-backed. It gates the
-   existing HUD OAM/BG1 edge anchoring so users can choose widened-edge HUD
-   placement or the original 4:3 HUD placement during widescreen gameplay.
-4. Advanced config keys now expose the Star Fox HUD anchor geometry:
-   `WidescreenHudOamFirstSlot`, `WidescreenHudOamSlots`,
-   `WidescreenHudOamHeight`, `WidescreenHudLeftEnd`,
-   `WidescreenHudRightStart`, `WidescreenHudBgY0`, and
-   `WidescreenHudBgY1`. These are presentation-only controls over the existing
-   OAM slot range and BG1 meter band, not Enhanced's mouse-driven per-element
-   editor.
-5. Use scripted captures for training, Corneria, each route branch, boss scenes,
+3. The old `WidescreenHud*` controls are parse-only compatibility keys. They
+   are not shown in the Mods view and do not affect Star Fox rendering.
+4. Use scripted captures for training, Corneria, each route branch, boss scenes,
    comms/portraits, and death/continue transitions.
-6. Only expose the launcher toggle after the side framebuffer, HUD anchoring,
-   and spawn/culling audits pass.
+5. Native renderer follow-up work should port the PC renderer's background,
+   sprite/HUD, text, and particle layers rather than reintroduce PPU margins.
 
 ## Presentation frame rates
 
@@ -169,8 +161,8 @@ Implementation notes:
 1. `20`, `30`, and `60` are implemented as host render cadence modes. They do
    not skip `RtlRunFrame`, so SNES simulation timing remains unchanged.
 2. Lower cadence modes skip SDL/OpenGL presents on non-presented frames while
-   still running the title `draw_ppu_frame` path. That preserves HDMA, raster
-   events, and the Star Fox widescreen frame latch.
+   still running the title `draw_ppu_frame` path. That preserves HDMA and
+   raster events.
 3. `90`, `120`, `240`, `360`, and `480` are accepted and use duplicate-present
    scheduling from the newest retained final frame. SDL/OpenGL vsync is disabled
    for these modes so extra presents are not pinned to a 60 Hz swap interval.
@@ -187,7 +179,8 @@ and StarFoxSNESRecomp now has a bounded `--frames N` run mode for repeatable
 local captures. The first renderer-facing extension is
 `RtlGameInfo.enhanced_render_frame`, which lets a title replace or supplement a
 host presentation buffer only when the game explicitly enables it. Star Fox's
-current implementation is a diagnostic supplement, not a replacement for the
+current implementation owns widescreen output, not a PPU margin supplement. It
+still needs more native layers before it is a replacement for the
 Enhanced native renderer.
 
 The concrete follow-up is a small title-neutral presentation diagnostics facade

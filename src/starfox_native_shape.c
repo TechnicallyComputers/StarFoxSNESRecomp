@@ -25,6 +25,8 @@ enum {
   kFaceEndContinue = 0xfe,
 
   kMaxVertices = 256,
+  kMaxFaceVertices = 12,
+  kMaxFaces = 512,
   kMaxEdges = 768,
   kMaxVisitedBsp = 256,
 };
@@ -47,9 +49,26 @@ typedef struct Edge {
   uint8_t b;
 } Edge;
 
+typedef struct Face {
+  int8_t visibility_index;
+  uint8_t colour_id;
+  int8_t normal_x;
+  int8_t normal_y;
+  int8_t normal_z;
+  uint8_t vertex_count;
+  uint8_t vertex_indices[kMaxFaceVertices];
+} Face;
+
+typedef struct Visibility {
+  uint8_t a;
+  uint8_t b;
+  uint8_t c;
+} Visibility;
+
 typedef struct ShapeHeader {
   uint32_t points_address;
   uint32_t faces_address;
+  uint16_t colour_pointer;
   uint8_t shift;
 } ShapeHeader;
 
@@ -58,6 +77,10 @@ typedef struct DecodeContext {
   size_t rom_size;
   Vec3i vertices[kMaxVertices];
   unsigned vertex_count;
+  Face faces[kMaxFaces];
+  unsigned face_count;
+  Visibility visibilities[256];
+  unsigned visibility_count;
   Edge edges[kMaxEdges];
   unsigned edge_count;
   uint32_t visited_bsp[kMaxVisitedBsp];
@@ -119,6 +142,7 @@ static bool decode_header(DecodeContext *ctx, uint16_t shape_address,
   if (!rom_u16(ctx, address, &points_pointer) ||
       !rom_u8(ctx, address + 2u, &data_bank) ||
       !rom_u16(ctx, address + 3u, &faces_pointer) ||
+      !rom_u16(ctx, address + 18u, &header->colour_pointer) ||
       !rom_u8(ctx, address + 7u, &shift))
     return false;
   if (points_pointer == 0 || faces_pointer == 0 || shift > 15)
@@ -211,29 +235,46 @@ static void append_edge(DecodeContext *ctx, uint8_t a, uint8_t b) {
   ctx->edges[ctx->edge_count++] = (Edge){a, b};
 }
 
+static bool append_face(DecodeContext *ctx, const Face *face) {
+  if (!face || face->vertex_count < 2)
+    return true;
+  if (ctx->face_count < kMaxFaces)
+    ctx->faces[ctx->face_count++] = *face;
+  for (unsigned i = 1; i < face->vertex_count; i++)
+    append_edge(ctx, face->vertex_indices[i - 1], face->vertex_indices[i]);
+  if (face->vertex_count > 2)
+    append_edge(ctx, face->vertex_indices[face->vertex_count - 1],
+                face->vertex_indices[0]);
+  return true;
+}
+
 static bool decode_face_record(DecodeContext *ctx, uint32_t *cursor,
                                uint8_t vertex_count) {
-  uint8_t previous = 0;
-  uint8_t first = 0;
-  uint8_t ignored;
-  if (!rom_u8(ctx, *cursor + 4u, &ignored))
+  uint8_t visibility, colour, nx, ny, nz;
+  Face face;
+  if (vertex_count > kMaxFaceVertices ||
+      !rom_u8(ctx, *cursor, &visibility) ||
+      !rom_u8(ctx, *cursor + 1u, &colour) ||
+      !rom_u8(ctx, *cursor + 2u, &nx) ||
+      !rom_u8(ctx, *cursor + 3u, &ny) ||
+      !rom_u8(ctx, *cursor + 4u, &nz))
     return false;
   *cursor += 5u;
+  memset(&face, 0, sizeof(face));
+  face.visibility_index = s8(visibility);
+  face.colour_id = colour;
+  face.normal_x = s8(nx);
+  face.normal_y = s8(ny);
+  face.normal_z = s8(nz);
+  face.vertex_count = vertex_count;
   for (uint8_t i = 0; i < vertex_count; i++) {
     uint8_t index;
     if (!rom_u8(ctx, *cursor, &index))
       return false;
     *cursor += 1u;
-    if (i == 0) {
-      first = index;
-    } else {
-      append_edge(ctx, previous, index);
-    }
-    previous = index;
+    face.vertex_indices[i] = index;
   }
-  if (vertex_count > 2)
-    append_edge(ctx, previous, first);
-  return true;
+  return append_face(ctx, &face);
 }
 
 static bool decode_face_list(DecodeContext *ctx, uint32_t address) {
@@ -320,7 +361,18 @@ static bool decode_faces(DecodeContext *ctx, const ShapeHeader *header) {
       uint8_t count;
       if (!rom_u8(ctx, cursor++, &count))
         return false;
-      cursor += (uint32_t)count * 3u;
+      for (unsigned i = 0; i < count; i++) {
+        uint8_t a, b, c;
+        if (!rom_u8(ctx, cursor, &a) || !rom_u8(ctx, cursor + 1u, &b) ||
+            !rom_u8(ctx, cursor + 2u, &c))
+          return false;
+        if (ctx->visibility_count <
+            sizeof(ctx->visibilities) / sizeof(ctx->visibilities[0])) {
+          ctx->visibilities[ctx->visibility_count++] =
+              (Visibility){a, b, c};
+        }
+        cursor += 3u;
+      }
       continue;
     }
     if (opcode == kFaces) {
@@ -422,9 +474,121 @@ static void put_bgra(uint8_t *pixels, size_t pitch, int width, int height,
   p[3] = 0xff;
 }
 
-static void draw_line(uint8_t *pixels, size_t pitch, int width, int height,
-                      const StarFoxNativeShapePose *pose,
-                      ScreenPoint a, ScreenPoint b) {
+static uint32_t fallback_bgra(uint8_t index) {
+  static const uint32_t colors[16] = {
+    0xff406080u, 0xff202020u, 0xff385840u, 0xff587860u,
+    0xff789078u, 0xff98b098u, 0xffb8c8b8u, 0xffe0f0e0u,
+    0xff283878u, 0xff3058b0u, 0xff4878e0u, 0xff70a0f8u,
+    0xff284828u, 0xff507850u, 0xffd0b840u, 0xfff0e070u,
+  };
+  return colors[index & 0x0f];
+}
+
+static uint32_t face_bgra(const DecodeContext *ctx, const ShapeHeader *header,
+                          const StarFoxNativeShapePose *pose,
+                          const Face *face) {
+  uint16_t descriptor;
+  const uint16_t colour_pointer =
+      pose->colour_pointer ? pose->colour_pointer : header->colour_pointer;
+  const uint32_t colour_address =
+      0x030000u | (uint16_t)(colour_pointer + (uint16_t)face->colour_id * 2u);
+  if (!rom_u16(ctx, colour_address, &descriptor))
+    return fallback_bgra(face->colour_id);
+  if ((descriptor & 0xc000u) == 0x4000u)
+    return pose->palette_bgra[15] ? pose->palette_bgra[15] : fallback_bgra(15);
+  const uint8_t packed = (uint8_t)descriptor;
+  const uint8_t even = packed & 0x0f;
+  if (even != 0 && pose->palette_bgra[even] &&
+      (pose->palette_bgra[even] & 0x00ffffffu))
+    return pose->palette_bgra[even];
+  return fallback_bgra(even);
+}
+
+static bool face_visible(const DecodeContext *ctx, const Face *face,
+                         const ScreenPoint *projected) {
+  (void)ctx;
+  (void)face;
+  (void)projected;
+  return true;
+}
+
+static unsigned fill_triangle(uint8_t *pixels, size_t pitch, int width,
+                              int height, const StarFoxNativeShapePose *pose,
+                              ScreenPoint a, ScreenPoint b, ScreenPoint c,
+                              uint32_t bgra) {
+  int min_x = a.x < b.x ? a.x : b.x;
+  int max_x = a.x > b.x ? a.x : b.x;
+  int min_y = a.y < b.y ? a.y : b.y;
+  int max_y = a.y > b.y ? a.y : b.y;
+  if (c.x < min_x) min_x = c.x;
+  if (c.x > max_x) max_x = c.x;
+  if (c.y < min_y) min_y = c.y;
+  if (c.y > max_y) max_y = c.y;
+  if (min_x < 0) min_x = 0;
+  if (max_x >= width) max_x = width - 1;
+  if (min_y < 0) min_y = 0;
+  if (max_y >= height) max_y = height - 1;
+  if (min_x > max_x || min_y > max_y)
+    return 0;
+
+  const int64_t area =
+      (int64_t)(b.x - a.x) * (c.y - a.y) -
+      (int64_t)(b.y - a.y) * (c.x - a.x);
+  if (area == 0)
+    return 0;
+  const uint8_t blue = (uint8_t)(bgra & 0xffu);
+  const uint8_t green = (uint8_t)((bgra >> 8) & 0xffu);
+  const uint8_t red = (uint8_t)((bgra >> 16) & 0xffu);
+  unsigned pixels_written = 0;
+  for (int y = min_y; y <= max_y; y++) {
+    for (int x = min_x; x <= max_x; x++) {
+      if (x >= pose->protect_center_left && x < pose->protect_center_right)
+        continue;
+      const int64_t w0 =
+          (int64_t)(b.x - a.x) * (y - a.y) -
+          (int64_t)(b.y - a.y) * (x - a.x);
+      const int64_t w1 =
+          (int64_t)(c.x - b.x) * (y - b.y) -
+          (int64_t)(c.y - b.y) * (x - b.x);
+      const int64_t w2 =
+          (int64_t)(a.x - c.x) * (y - c.y) -
+          (int64_t)(a.y - c.y) * (x - c.x);
+      if ((area > 0 && w0 >= 0 && w1 >= 0 && w2 >= 0) ||
+          (area < 0 && w0 <= 0 && w1 <= 0 && w2 <= 0)) {
+        put_bgra(pixels, pitch, width, height, x, y, blue, green, red);
+        pixels_written++;
+      }
+    }
+  }
+  return pixels_written;
+}
+
+static unsigned fill_face(uint8_t *pixels, size_t pitch, int width, int height,
+                          const DecodeContext *ctx,
+                          const ShapeHeader *header,
+                          const StarFoxNativeShapePose *pose,
+                          const ScreenPoint *projected, const Face *face) {
+  if (face->vertex_count < 3 || !face_visible(ctx, face, projected))
+    return 0;
+  for (unsigned i = 0; i < face->vertex_count; i++) {
+    const uint8_t index = face->vertex_indices[i];
+    if (index >= ctx->vertex_count || !projected[index].visible)
+      return 0;
+  }
+  const uint32_t color = face_bgra(ctx, header, pose, face);
+  const ScreenPoint first = projected[face->vertex_indices[0]];
+  unsigned pixels_written = 0;
+  for (unsigned i = 2; i < face->vertex_count; i++) {
+    pixels_written += fill_triangle(pixels, pitch, width, height, pose, first,
+                                    projected[face->vertex_indices[i - 1]],
+                                    projected[face->vertex_indices[i]], color);
+  }
+  return pixels_written;
+}
+
+static unsigned draw_line(uint8_t *pixels, size_t pitch, int width, int height,
+                          const StarFoxNativeShapePose *pose,
+                          ScreenPoint a, ScreenPoint b) {
   int x0 = a.x, y0 = a.y;
   const int x1 = b.x, y1 = b.y;
   const int dx = x0 < x1 ? x1 - x0 : x0 - x1;
@@ -432,9 +596,12 @@ static void draw_line(uint8_t *pixels, size_t pitch, int width, int height,
   const int dy = y0 < y1 ? y1 - y0 : y0 - y1;
   const int sy = y0 < y1 ? 1 : -1;
   int err = (dx > dy ? dx : -dy) / 2;
+  unsigned pixels_written = 0;
   for (unsigned guard = 0; guard < 4096; guard++) {
     if (x0 < pose->protect_center_left || x0 >= pose->protect_center_right) {
       put_bgra(pixels, pitch, width, height, x0, y0, 0x20, 0xff, 0xa8);
+      if (x0 >= 0 && y0 >= 0 && x0 < width && y0 < height)
+        pixels_written++;
     }
     if (x0 == x1 && y0 == y1)
       break;
@@ -448,6 +615,7 @@ static void draw_line(uint8_t *pixels, size_t pitch, int width, int height,
       y0 += sy;
     }
   }
+  return pixels_written;
 }
 
 int StarFoxNativeDrawShapeWireframe(const uint8_t *rom, size_t rom_size,
@@ -484,6 +652,18 @@ int StarFoxNativeDrawShapeWireframe(const uint8_t *rom, size_t rom_size,
   }
 
   unsigned lines = 0;
+  unsigned filled_faces = 0;
+  unsigned filled_pixels = 0;
+  for (unsigned i = 0; i < ctx.face_count; i++) {
+    const unsigned face_pixels = fill_face(pixels, pitch, width, height, &ctx,
+                                           &header, pose, projected,
+                                           &ctx.faces[i]);
+    if (face_pixels) {
+      filled_faces++;
+      filled_pixels += face_pixels;
+    }
+  }
+  unsigned line_pixels = 0;
   for (unsigned i = 0; i < ctx.edge_count; i++) {
     const Edge edge = ctx.edges[i];
     Vec3i a = transformed[edge.a];
@@ -508,13 +688,18 @@ int StarFoxNativeDrawShapeWireframe(const uint8_t *rom, size_t rom_size,
       continue;
     if (!pa.visible || !pb.visible)
       continue;
-    draw_line(pixels, pitch, width, height, pose, pa, pb);
+    const unsigned pixels_written =
+        draw_line(pixels, pitch, width, height, pose, pa, pb);
+    line_pixels += pixels_written;
     lines++;
   }
   if (stats) {
     stats->vertices = ctx.vertex_count;
-    stats->faces = ctx.edge_count;
+    stats->faces = ctx.face_count;
+    stats->filled_faces = filled_faces;
+    stats->filled_pixels = filled_pixels;
     stats->lines = lines;
+    stats->line_pixels = line_pixels;
   }
-  return lines != 0;
+  return line_pixels != 0 || filled_pixels != 0;
 }

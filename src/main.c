@@ -998,8 +998,9 @@ int main(int argc, char** argv) {
       settings.fullscreen = g_config.fullscreen;
       settings.ignore_aspect = g_config.ignore_aspect_ratio;
       settings.linear_filter = g_config.linear_filtering;
-      settings.widescreen = g_config.widescreen_extra != 0;
-      settings.widescreen_hud = g_config.widescreen_hud ? 1 : 0;
+      settings.widescreen =
+          g_config.enhanced_renderer && g_config.widescreen_extra != 0;
+      settings.widescreen_hud = 0;
       settings.enable_audio = g_config.enable_audio;
       settings.audio_freq = g_config.audio_freq;
       settings.volume = 100;
@@ -1076,7 +1077,8 @@ int main(int argc, char** argv) {
         } else if (g_config.widescreen_extra == 0) {
           g_config.widescreen_extra = 71;
         }
-        g_config.widescreen_hud = settings.widescreen_hud != 0;
+        if (g_config.widescreen_extra != 0)
+          g_config.enhanced_renderer = true;
         g_config.enable_audio = settings.enable_audio != 0;
         g_config.audio_freq = (uint16)settings.audio_freq;
         g_config.enable_gamepad[0] = settings.player_src[0] == 2;
@@ -1153,7 +1155,9 @@ int main(int argc, char** argv) {
   }
 
   g_gamepad[0].joystick_id = g_gamepad[1].joystick_id = -1;
-  g_ws_extra = IntMin(g_config.widescreen_extra, kWsExtraMax);
+  g_ws_extra = g_config.enhanced_renderer
+                   ? IntMin(g_config.widescreen_extra, kWsExtraMax)
+                   : 0;
   g_ws_active = g_ws_extra != 0;
   g_snes_width = 256 + 2 * g_ws_extra;
   g_snes_height = 224;
@@ -1994,15 +1998,8 @@ static const char kDefaultSmwIniContent[] =
   "# Remove the sprite limits per scan line\n"
   "NoSpriteLimits = 1\n"
   "Widescreen = 16:9\n"
-  "WidescreenHud = 1\n"
-  "WidescreenHudOamFirstSlot = 0\n"
-  "WidescreenHudOamSlots = 10\n"
-  "WidescreenHudOamHeight = 224\n"
-  "WidescreenHudLeftEnd = 64\n"
-  "WidescreenHudRightStart = 192\n"
-  "WidescreenHudBgY0 = 161\n"
-  "WidescreenHudBgY1 = 225\n"
   "CrosshairColor = Original\n"
+  "EnhancedRenderer = 0\n"
   "\n"
   "[Features]\n"
   "GodMode = 0\n"

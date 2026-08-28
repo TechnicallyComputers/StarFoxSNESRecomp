@@ -1,5 +1,4 @@
 #include "starfox_rtl.h"
-#include "widescreen.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -19,10 +18,6 @@ uint16 counter_global_frames;
 static bool s_started;
 static uint32_t s_resume_pc;
 static uint64_t s_next_vblank_master;
-static uint32_t s_portrait_cache[64][32];
-static bool s_portrait_cache_valid;
-static bool s_widescreen_mode2_line_seen;
-static uint8_t s_widescreen_scene_hold;
 
 enum {
   kSnesMasterClocksPerLine = 1364,
@@ -392,57 +387,6 @@ void StarFoxEnhancedPostFrame(uint32 inputs) {
   s_nukes_before_count = 0;
 }
 
-/* Dialog portraits occupy PPU x=65..96, y=160..223 in the US v1.2 HUD.
- * The game updates their tiles over multiple DMA slices; with the host's
- * frame-at-a-time PPU renderer an intermediate slice can otherwise appear as
- * horizontal palette stripes for one display frame. Preserve the last fully
- * formed portrait only across that unmistakable partial-upload signature. */
-static void stabilize_dialog_portrait(void) {
-  const unsigned left = g_ws_extra + 65;
-  unsigned horizontal_changes = 0;
-  unsigned vertical_changes = 0;
-  for (unsigned y = 160; y < 224; y++) {
-    const uint32_t *row = (const uint32_t *)(g_ppu->renderBuffer +
-                                             (size_t)y * g_ppu->renderPitch);
-    for (unsigned x = left + 1; x < left + 32; x++)
-      horizontal_changes += row[x] != row[x - 1];
-  }
-  for (unsigned x = left; x < left + 32; x++) {
-    const uint32_t *first_row =
-        (const uint32_t *)(g_ppu->renderBuffer +
-                           (size_t)160 * g_ppu->renderPitch);
-    uint32_t previous = first_row[x];
-    for (unsigned y = 161; y < 224; y++) {
-      const uint32_t *row = (const uint32_t *)(g_ppu->renderBuffer +
-                                               (size_t)y *
-                                                   g_ppu->renderPitch);
-      vertical_changes += row[x] != previous;
-      previous = row[x];
-    }
-  }
-
-  const bool partial_upload =
-      horizontal_changes < 400 && vertical_changes > 800;
-  if (partial_upload && s_portrait_cache_valid) {
-    for (unsigned y = 0; y < 64; y++) {
-      uint32_t *row = (uint32_t *)(g_ppu->renderBuffer +
-                                   (size_t)(160 + y) *
-                                       g_ppu->renderPitch);
-      memcpy(row + left, s_portrait_cache[y],
-             sizeof(s_portrait_cache[y]));
-    }
-  } else if (horizontal_changes >= 400) {
-    for (unsigned y = 0; y < 64; y++) {
-      const uint32_t *row =
-          (const uint32_t *)(g_ppu->renderBuffer +
-                             (size_t)(160 + y) * g_ppu->renderPitch);
-      memcpy(s_portrait_cache[y], row + left,
-             sizeof(s_portrait_cache[y]));
-    }
-    s_portrait_cache_valid = true;
-  }
-}
-
 static void schedule_first_vblank(void) {
   uint32_t delta;
   if (g_snes->vPos < kSnesVblankStartLine) {
@@ -528,71 +472,6 @@ static bool irq_pending(void) {
   return g_snes->inIrq || (fx && fx->irq_pending);
 }
 
-static bool starfox_hud_active(void) {
-  const SuperFx *fx = g_snes->cart->superfx;
-  return fx && fx->ram_size > 0x21d &&
-         (fx->ram[0x21c] | fx->ram[0x21d]);
-}
-
-static bool starfox_widescreen_scene_active(const Ppu *ppu) {
-  return starfox_hud_active() || PPU_mode(ppu) == 2 ||
-         s_widescreen_scene_hold != 0;
-}
-
-/* Insert the presentation-only wide GSU replay before final PPU composition.
- * This is deliberately a priority-buffer operation rather than an RGB copy:
- * the normal SNES color window, fixed-color math, brightness, subscreen, and
- * flash behavior then apply to the native center and the new side frustums as
- * one picture. */
-static void starfox_widescreen_line_enhancer(Ppu *ppu, uint y, bool sub,
-                                             void *context) {
-  (void)context;
-  if (!g_ws_extra || y == 0 || y > 160 ||
-      !starfox_widescreen_scene_active(ppu) ||
-      !(ppu->screenEnabled[sub] & 1))
-    return;
-
-  const uint8_t *pixels = NULL;
-  const uint8_t *valid = NULL;
-  const uint8_t *bg1_palette = PpuGetMode2Bg1Palette(ppu);
-  unsigned width = 0, height = 0;
-  if (!superfx_get_widescreen_frame(g_snes->cart->superfx, &pixels, &valid,
-                                    &width, &height) ||
-      y > height)
-    return;
-
-  if (PPU_mode(ppu) == 2)
-    s_widescreen_mode2_line_seen = true;
-  const unsigned screen_y = y - 1;
-  const unsigned native_width = 224;
-  const unsigned replay_extra = (unsigned)g_ws_extra + 16;
-  const unsigned native_left = replay_extra;
-  const unsigned native_right = native_left + native_width;
-  const unsigned output_width = 256u + 2u * (unsigned)g_ws_extra;
-  const unsigned capture_base = (native_width - replay_extra) / 2;
-
-  for (unsigned raw_x = 0; raw_x < width && raw_x < output_width; raw_x++) {
-    if ((raw_x >= native_left && raw_x < native_right) ||
-        !valid[(size_t)screen_y * width + raw_x])
-      continue;
-
-    const unsigned side_x = raw_x < replay_extra
-                                ? raw_x
-                                : raw_x - native_width - replay_extra;
-    const unsigned palette_x = 16 + capture_base + side_x;
-    const uint8_t palette_base =
-        bg1_palette[(size_t)screen_y * 256 + palette_x];
-    const uint8_t palette_pixel =
-        palette_base + pixels[(size_t)screen_y * width + raw_x];
-    const int screen_x = (int)raw_x - g_ws_extra;
-    PpuZbufType *dst =
-        &ppu->bgBuffers[sub].data[screen_x + kPpuExtraLeftRight];
-    const PpuZbufType replay_pixel = 0xc000u + palette_pixel;
-    if (replay_pixel > *dst)
-      *dst = replay_pixel;
-  }
-}
-
 static bool run_main_until_boundary(void) {
   interp_bridge_set_master_deadline(s_next_vblank_master);
   const bool completed =
@@ -617,30 +496,10 @@ static void service_irq(void) {
 }
 
 void StarFoxRunFrame(void) {
-  /* Exact US v1.2 disassembly: RenderObjects is $01:AC1D; projection center X
-   * and maximum X are GSU RAM $0034/$003A, with a 192-line scene. */
-  /* The GSU framebuffer is 224 pixels wide and sits at PPU x=16..239. A
-   * host margin of N pixels therefore needs N+16 newly projected columns on
-   * each side to cover the complete output rather than leave a dead inset at
-   * the new outer edge. */
   SuperFx *const superfx = g_snes->cart->superfx;
-  const unsigned gsu_extra = g_ws_extra ? g_ws_extra + 16 : 0;
-  superfx_set_enhancement_mode(
-      superfx, g_ws_extra
-                   ? kSuperFxEnhancement_WidescreenLinearProjection
-                   : kSuperFxEnhancement_None);
-  superfx_set_widescreen(superfx, (uint16_t)gsu_extra,
-                         0x01, 0xac1d, 0x0034, 0x003a, 192);
-  if (g_ws_extra) {
-    /* RenderHUDFlag gates three screen-space GSU HUD passes inside
-     * RenderObjects. $01BE similarly gates a native-viewport effect pass.
-     * Their native results remain authoritative; replaying either pass with a
-     * 398-pixel clip range turns framebuffer clears into opaque side bands. */
-    static const uint16_t replay_zero_words[] = {0x01be, 0x021c};
-    superfx_set_widescreen_replay_zero_words(
-        superfx, replay_zero_words,
-        sizeof(replay_zero_words) / sizeof(replay_zero_words[0]));
-  } else {
+  if (superfx) {
+    superfx_set_enhancement_mode(superfx, kSuperFxEnhancement_None);
+    superfx_set_widescreen(superfx, 0, 0, 0, 0, 0, 0);
     superfx_set_widescreen_replay_zero_words(superfx, NULL, 0);
   }
 
@@ -700,52 +559,18 @@ void StarFoxRunFrame(void) {
 
 void StarFoxDrawPpuFrame(void) {
   SimpleHdma hdma[8];
-  bool wide_scene = false;
   uint16_t saved_crosshair_palette[16];
   const bool restore_crosshair_palette =
       starfox_apply_crosshair_tint(saved_crosshair_palette);
-  if (g_ws_extra && g_ppu->renderBuffer) {
-    const size_t width = 256u + 2u * (unsigned)g_ws_extra;
-    for (unsigned y = 0; y < 224; y++)
-      memset(g_ppu->renderBuffer + (size_t)y * g_ppu->renderPitch, 0,
-             width * sizeof(uint32_t));
-  }
-  /* BG2 is the Mode 2 landscape. Render its actual tilemap/offset result into
-   * the added columns; keep BG1 (the native GSU framebuffer) and BG3/HUD
-   * clamped until the GSU replay enhancer inserts only its valid side
-   * pixels. */
-  PpuSetExtraSpace(g_ppu, (uint16_t)g_ws_extra);
-  PpuSetWidescreenLayerMask(g_ppu, 1u << 1);
-  /* Star Fox centers its 224-pixel GSU playfield at x=16..239. Its opaque
-   * BG1 edge padding must not cover the continuous BG2 landscape or the
-   * presentation-only wide GSU replay. */
-  PpuSetWidescreenLayerViewportInset(g_ppu, 0, 16, 16);
-  if (g_ws_extra && g_config.widescreen_hud && starfox_hud_active()) {
-    /* RenderHUD allocates OAM slots 0..9 consistently: bombs on the right,
-     * then lives and shield on the left. Keep their original 16/24-pixel
-     * edge padding while anchoring them to the expanded viewport. */
-    PpuSetWsHudOamBand(g_ppu, g_config.widescreen_hud_oam_height,
-                       g_config.widescreen_hud_left_end,
-                       g_config.widescreen_hud_right_start);
-    PpuSetWsHudOamShiftRange(g_ppu,
-                             g_config.widescreen_hud_oam_first_slot,
-                             g_config.widescreen_hud_oam_slots);
-    PpuSetWsHudOamShiftRange2(g_ppu, 0, 0);
-    PpuSetWidescreenLayerAnchorBand(g_ppu, 0,
-                                    g_config.widescreen_hud_bg_y0,
-                                    g_config.widescreen_hud_bg_y1,
-                                    g_config.widescreen_hud_left_end,
-                                    g_config.widescreen_hud_right_start);
-  } else {
-    PpuSetWsHudOamBand(g_ppu, 0, 0, 0);
-    PpuSetWsHudOamShiftRange(g_ppu, 0, 0);
-    PpuSetWsHudOamShiftRange2(g_ppu, 0, 0);
-    PpuSetWidescreenLayerAnchorBand(g_ppu, 0, 0, 0, 0, 0);
-  }
-  PpuSetMode2LayerCapture(g_ppu, g_ws_extra ? 1 : -1);
-  PpuSetWidescreenLineEnhancer(
-      g_ppu, g_ws_extra ? starfox_widescreen_line_enhancer : NULL, NULL);
-  s_widescreen_mode2_line_seen = false;
+  PpuSetExtraSpace(g_ppu, 0);
+  PpuSetWidescreenLayerMask(g_ppu, 0);
+  PpuSetWidescreenLayerViewportInset(g_ppu, 0, 0, 0);
+  PpuSetWsHudOamBand(g_ppu, 0, 0, 0);
+  PpuSetWsHudOamShiftRange(g_ppu, 0, 0);
+  PpuSetWsHudOamShiftRange2(g_ppu, 0, 0);
+  PpuSetWidescreenLayerAnchorBand(g_ppu, 0, 0, 0, 0, 0);
+  PpuSetMode2LayerCapture(g_ppu, -1);
+  PpuSetWidescreenLineEnhancer(g_ppu, NULL, NULL);
   dma_startDma(g_dma, g_snesrecomp_last_hdmaen, true);
   for (int ch = 0; ch < 8; ch++) SimpleHdma_Init(&hdma[ch], &g_dma->channel[ch]);
 
@@ -758,44 +583,4 @@ void StarFoxDrawPpuFrame(void) {
     memcpy(&g_ppu->cgram[kCrosshairObjPaletteFirst],
            saved_crosshair_palette, sizeof(saved_crosshair_palette));
   }
-
-  {
-    /* Exact US v1.2 disassembly: MainGameInit sets RenderHUDFlag at GSU RAM
-     * $021C, and RenderObjects consumes it for full gameplay scenes. It stays
-     * authoritative through damage/obstacle frames that temporarily leave
-     * Mode 2. Post-render Mode 2 additionally covers the no-HUD attract
-     * carrier; title and controls previews are Mode 1 with this flag clear. */
-    const bool strong_scene =
-        starfox_hud_active() || s_widescreen_mode2_line_seen ||
-        PPU_mode(g_ppu) == 2;
-    wide_scene = strong_scene || s_widescreen_scene_hold != 0;
-    if (strong_scene)
-      s_widescreen_scene_hold = 2;
-    else if (s_widescreen_scene_hold)
-      s_widescreen_scene_hold--;
-  }
-
-  if (g_ws_extra && !wide_scene) {
-    const unsigned output_width = 256u + 2u * (unsigned)g_ws_extra;
-    /* Bounded screens still render through the same full-width PPU setup so
-     * switching modes never changes the native center. Discard only their
-     * unowned side columns after classification. */
-    for (int y = 0; y < 224; y++) {
-      uint32_t *dst = (uint32_t *)(g_ppu->renderBuffer +
-                                   (size_t)y * g_ppu->renderPitch);
-      memset(dst, 0, (size_t)g_ws_extra * sizeof(*dst));
-      memset(dst + g_ws_extra + 256, 0,
-             (output_width - (unsigned)g_ws_extra - 256) * sizeof(*dst));
-    }
-  }
-
-  if (g_ws_extra && wide_scene)
-    stabilize_dialog_portrait();
-  else
-    s_portrait_cache_valid = false;
-
-  /* The PPU center displayed the framebuffer uploaded before the newest GSU
-   * completion. Promote that completion only after this picture so the side
-   * replay joins the matching native center on the next display frame. */
-  superfx_latch_widescreen_frame(g_snes->cart->superfx);
 }
