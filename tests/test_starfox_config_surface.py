@@ -62,6 +62,7 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
 
         self.assertIn("RECOMP_UI_ENABLE_MODS ON", cmake)
         self.assertIn("src/starfox_mods.c", cmake)
+        self.assertIn("src/starfox_native_shape.c", cmake)
         self.assertIn("StarFoxLauncherModsProvider", main_c)
         self.assertIn("game_info.mods", main_c)
         self.assertIn("game_info.widescreen_supported = 1", main_c)
@@ -107,6 +108,18 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
         self.assertIn("RtlDrawDefaultPpuFrame", main_c)
         self.assertIn("StarFoxEnhancedRenderFrame", renderer_c)
         self.assertIn("default_renderer_done", renderer_c)
+        self.assertIn("kGsuDrawList = 0x1960", renderer_c)
+        self.assertIn("kGsuDlPtr = 0x0202", renderer_c)
+        self.assertIn("draw_gsu_draw_list_shapes", renderer_c)
+        self.assertIn("clear_side_margins", renderer_c)
+        self.assertIn("protect_center_left", renderer_c)
+        native_shape_c = (
+            ROOT / "src" / "starfox_native_shape.c"
+        ).read_text(encoding="utf-8")
+        self.assertIn("StarFoxNativeDrawShapeWireframe", native_shape_c)
+        self.assertIn("kBspInit", native_shape_c)
+        self.assertIn("kPointsX16", native_shape_c)
+        self.assertIn("focal", (ROOT / "third_party" / "starfox-enhanced" / "include" / "starfox" / "render" / "software_renderer.hpp").read_text(encoding="utf-8"))
 
     def test_presentation_debugger_keys_are_wired(self):
         config_h = (ROOT / "src" / "config.h").read_text(encoding="utf-8")
