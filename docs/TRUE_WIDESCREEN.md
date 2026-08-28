@@ -18,13 +18,22 @@ Star Fox output belongs exclusively to the opt-in native renderer path behind
 ## Current Native Path
 
 `StarFoxEnhancedRenderFrame` handles the frame before the default presenter runs.
-It clears the full target, asks `StarFoxDrawPpuFrame` for an authentic 256-wide
-center fallback, copies that center into the requested native framebuffer, and
-then draws decoded Star Fox shape geometry from the captured Super FX draw list.
+It clears the full target, lets `StarFoxDrawPpuFrame` advance the game's normal
+PPU/HDMA render state, renders BG1/BG2/BG3 and OAM through Star Fox Enhanced's
+`BackgroundRenderer` and `SpriteRenderer` into an indexed framebuffer from raw
+PPU VRAM/CGRAM/OAM/register state, and converts that framebuffer to the host
+BGRA target.
 
-That center fallback is intentionally bounded. It is not a widened PPU output
-and it does not populate the side margins. The side columns are either native
-renderer output or black.
+The earlier local C Super FX shape overlay is not part of normal Enhanced
+output. It is diagnostic-only behind `SNESRECOMP_ENHANCED_NATIVE_SHAPES=1`
+because it is not faithful to Star Fox Enhanced's `SoftwareRenderer` and can
+produce invalid geometry. The next renderer milestone is a direct bridge to the
+pinned Enhanced `SoftwareRenderer` for Super FX meshes, cockpit/HUD shapes,
+material handling, clipping, ordering, and projection.
+
+The old stock-RGB center copy remains only as a hard failure fallback if native
+PPU-layer rendering cannot run. In the normal Enhanced path the stock renderer
+is not the final image owner.
 
 ## PC Port Crosswalk
 
@@ -35,10 +44,10 @@ renderers compose a wider framebuffer from game-specific assets/state.
 | PC port source | Recomp counterpart | Status |
 |---|---|---|
 | `src/simulation/wdc65816.cpp` symbol lookup and draw interception | `recomp/bank*.cfg` `symbol` overlay plus `StarFoxEnhancedRenderFrame` | Symbols imported; draw-list snapshot in place |
-| `include/starfox/render/software_renderer.hpp` `RenderPose` | `StarFoxNativeShapePose` | Partial: position, rotation, vanish point, palette, animation |
-| `src/render/software_renderer.cpp` shape transform, source projection, clipping, BSP ordering, face fill | `src/starfox_native_shape.c` | Partial: shape decode, simple transform/project, fill, edges |
-| `src/render/background_renderer.cpp` BG1/BG2/BG3 native tile composition | none yet | Needed for full native scene ownership |
-| `src/render/sprite_renderer.cpp`, scaled text, particles, cockpit HUD | none/partial config hooks | Needed for HUD/text/effects parity |
+| `include/starfox/render/software_renderer.hpp` `RenderPose` | none yet; local C overlay is diagnostic-only | Needed: direct `SoftwareRenderer` bridge for Super FX geometry |
+| `src/render/software_renderer.cpp` shape transform, source projection, clipping, BSP ordering, face fill | none yet; `SNESRECOMP_ENHANCED_NATIVE_SHAPES` is disabled by default | Needed: faithful mesh/material/presentation path |
+| `src/render/background_renderer.cpp` BG1/BG2/BG3 native tile composition | `src/starfox_enhanced_native.cpp` | Direct Enhanced renderer bridge for native BG layers |
+| `src/render/sprite_renderer.cpp`, scaled text, particles, cockpit HUD | `src/starfox_enhanced_native.cpp` for OAM only; text/effects/HUD pending | OAM bridge present; text/effects/HUD parity needed |
 | timing interpolation in `tests/timing_tests.cpp` and simulation snapshots | presentation history and fixed duplicate-present scheduling | Not yet interpolation |
 
 ## Validation Rule

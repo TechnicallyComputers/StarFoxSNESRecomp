@@ -26,6 +26,21 @@ if(NOT STARFOX_GEN_SOURCES)
   message(FATAL_ERROR "src/gen is empty; run tools/regen.sh with the verified ROM")
 endif()
 
+add_library(StarFoxEnhancedNativeRenderer OBJECT
+  src/starfox_enhanced_native.cpp
+  third_party/starfox-enhanced/src/render/background_renderer.cpp
+  third_party/starfox-enhanced/src/render/sprite_renderer.cpp
+)
+target_include_directories(StarFoxEnhancedNativeRenderer PRIVATE
+  ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/recomp
+  ${CMAKE_SOURCE_DIR}/third_party/starfox-enhanced/include
+  ${SNESRECOMP_RUNNER_INCLUDE_DIRS})
+target_compile_features(StarFoxEnhancedNativeRenderer PRIVATE cxx_std_20)
+if(NOT MSVC)
+  target_compile_options(StarFoxEnhancedNativeRenderer PRIVATE
+    "$<$<COMPILE_LANGUAGE:CXX>:-w>")
+endif()
+
 add_executable(StarFoxSNESRecomp
   ${SNESRECOMP_RUNNER_SOURCES}
   src/config.c
@@ -42,11 +57,13 @@ add_executable(StarFoxSNESRecomp
   src/starfox_rtl.c
   src/starfox_spc_player.c
   third_party/gl_core/gl_core_3_1.c
+  $<TARGET_OBJECTS:StarFoxEnhancedNativeRenderer>
   ${STARFOX_GEN_SOURCES}
 )
 
 target_include_directories(StarFoxSNESRecomp PRIVATE
   ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/recomp
+  ${CMAKE_SOURCE_DIR}/third_party/starfox-enhanced/include
   ${SNESRECOMP_RUNNER_INCLUDE_DIRS})
 target_compile_definitions(StarFoxSNESRecomp PRIVATE
   SMW_DISABLE_LM=1 SYSTEM_VOLUME_MIXER_AVAILABLE=0

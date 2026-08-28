@@ -1,6 +1,7 @@
 #include "starfox_enhanced_renderer.h"
 
 #include "common_rtl.h"
+#include "starfox_enhanced_native.h"
 #include "starfox_native_shape.h"
 #include "snes/cart.h"
 #include "snes/ppu.h"
@@ -245,6 +246,17 @@ static bool renderer_stats_enabled(void) {
   return enabled != 0;
 }
 
+static bool native_shape_overlay_enabled(void) {
+  static int checked;
+  static int enabled;
+  if (!checked) {
+    const char *env = getenv("SNESRECOMP_ENHANCED_NATIVE_SHAPES");
+    enabled = env && *env && strcmp(env, "0") != 0;
+    checked = 1;
+  }
+  return enabled != 0;
+}
+
 static void add_shape_stats(NativeRendererStats *total,
                             const StarFoxNativeShapeStats *shape) {
   if (!total || !shape)
@@ -318,6 +330,7 @@ static void snapshot_gsu_draw_list(void) {
 
 static unsigned draw_snapshot_shapes(uint8_t *pixels, size_t pitch,
                                      int width, int height, uint16_t ws_extra,
+                                     bool protect_stock_center,
                                      NativeRendererStats *renderer_stats) {
   Cart *cart = g_snes ? g_snes->cart : NULL;
   if (!ws_extra || !g_native_snapshot.valid || !cart || !cart->rom ||
@@ -348,8 +361,10 @@ static unsigned draw_snapshot_shapes(uint8_t *pixels, size_t pitch,
       pose.colour_pointer = entry->colour_pointer;
       pose.animation_frame = entry->animation_frame;
       pose.widescreen_extra = ws_extra;
-      pose.protect_center_left = (int)ws_extra;
-      pose.protect_center_right = (int)ws_extra + 256;
+      pose.protect_center_left =
+          protect_stock_center ? (int)ws_extra : 0;
+      pose.protect_center_right =
+          protect_stock_center ? (int)ws_extra + 256 : 0;
       load_superfx_palette(pose.palette_bgra);
       if (StarFoxNativeDrawShapeWireframe(cart->rom, cart->romSize,
                                           entry->shape,
@@ -452,19 +467,28 @@ RtlEnhancedRenderResult StarFoxEnhancedRenderFrame(
     return kRtlEnhancedRender_NotHandled;
   if (frame->default_renderer_done)
     return kRtlEnhancedRender_Handled;
-  snapshot_gsu_draw_list();
+  const bool shape_overlay_enabled = native_shape_overlay_enabled();
+  if (shape_overlay_enabled)
+    snapshot_gsu_draw_list();
   clear_frame(frame->pixels, frame->pitch, frame->width, frame->height);
   StarFoxDrawPpuFrame();
-  copy_stock_center(frame);
-  if (!g_native_snapshot.valid)
+  const int native_ppu_done = StarFoxEnhancedDrawNativePpuLayers(
+      frame->pixels, frame->pitch, frame->width, frame->height,
+      frame->widescreen_extra);
+  if (!native_ppu_done)
+    copy_stock_center(frame);
+  if (shape_overlay_enabled && !g_native_snapshot.valid)
     snapshot_gsu_draw_list();
   NativeRendererStats stats;
   memset(&stats, 0, sizeof(stats));
-  unsigned drawn = draw_snapshot_shapes(
-      frame->pixels, frame->pitch, frame->width, frame->height,
-      frame->widescreen_extra, &stats);
-  log_renderer_stats(&stats, frame->widescreen_extra, frame->width,
-                     frame->height);
+  unsigned drawn = 0;
+  if (shape_overlay_enabled) {
+    drawn = draw_snapshot_shapes(frame->pixels, frame->pitch, frame->width,
+                                 frame->height, frame->widescreen_extra,
+                                 !native_ppu_done, &stats);
+    log_renderer_stats(&stats, frame->widescreen_extra, frame->width,
+                       frame->height);
+  }
   if (!drawn && debug_probe_enabled()) {
     draw_debug_probe(frame->pixels, frame->pitch, frame->width, frame->height,
                      frame->widescreen_extra);

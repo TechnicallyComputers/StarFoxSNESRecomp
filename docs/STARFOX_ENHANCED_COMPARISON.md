@@ -66,9 +66,11 @@ and comparison harness rather than a bulk import into shared snesrecomp code.
 7. Enhanced-renderer scaffold: in progress. The shared `RtlGameInfo` contract
    now has an optional title-owned `enhanced_render_frame` hook. Star Fox wires
    it behind `EnhancedRenderer = 0` by default. When enabled, the hook owns the
-   presentation frame before the default presenter runs; the authentic 256-wide
-   PPU output is only a bounded center fallback while native Star Fox layers
-   are brought up.
+   presentation frame before the default presenter runs. The direct native
+   bridge now compiles Star Fox Enhanced's `BackgroundRenderer` and
+   `SpriteRenderer` for BG/OAM presentation. The previous local Super FX shape
+   overlay is disabled by default and kept only as a diagnostic until the
+   pinned Enhanced `SoftwareRenderer` is bridged.
 
 8. Validation: in progress. The tools and native build validate without
    committing generated symbol or ROM output; interactive route/boss audits are
@@ -103,9 +105,9 @@ and comparison harness rather than a bulk import into shared snesrecomp code.
 
 ## Deferred or non-portable areas
 
-- Enhanced's native C++ renderer is a translation of game-specific Super FX
-  shape and rasterization behavior. It is useful as a behavioral reference, but
-  not a drop-in replacement for the snesrecomp hardware model.
+- Enhanced's native C++ renderer is game-specific presentation code. It is not
+  a drop-in replacement for the generic snesrecomp PPU renderer, but the Star
+  Fox opt-in renderer can port/adapt it directly behind the title callback.
 - RetroCPU, SDL3 integration, and native app structure are source-port
   architecture, not recomp framework components.
 - Star Fox EX and patch-built outputs must remain outside this repository unless
@@ -120,8 +122,12 @@ The long-term renderer plan should be split between framework and title work:
    without weakening the default console-accurate renderer. The first hook is
    now present as an opt-in title callback from the host presentation buffer.
 2. Implement Star Fox as the first opt-in plugin using reviewed symbols and the
-   pinned Enhanced renderer as a behavioral reference for Super FX transforms,
-   clipping, line colors, cockpit/HUD composition, and high-FPS interpolation.
+   pinned Enhanced renderer as the source for native framebuffer, BG/OAM,
+   Super FX transforms, clipping, line colors, cockpit/HUD composition, and
+   high-FPS interpolation. `src/starfox_enhanced_native.cpp` now builds against
+   the pinned Enhanced `BackgroundRenderer` and `SpriteRenderer` and feeds them
+   from snesrecomp PPU state. Super FX geometry must move next to Enhanced's
+   `SoftwareRenderer`; the local C overlay is not accepted as parity output.
 3. Keep the default PPU renderer intact for compatibility, debugging, and
    regression comparison.
 4. Validate the native Star Fox renderer across routes, bosses, comms,

@@ -91,6 +91,12 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
         renderer_c = (
             ROOT / "src" / "starfox_enhanced_renderer.c"
         ).read_text(encoding="utf-8")
+        native_h = (
+            ROOT / "src" / "starfox_enhanced_native.h"
+        ).read_text(encoding="utf-8")
+        native_cpp = (
+            ROOT / "src" / "starfox_enhanced_native.cpp"
+        ).read_text(encoding="utf-8")
         infra_h = (
             ROOT / "snesrecomp" / "runner" / "src" / "common_cpu_infra.h"
         ).read_text(encoding="utf-8")
@@ -110,6 +116,25 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
         self.assertIn("default_renderer_done", renderer_c)
         self.assertIn("StarFoxDrawPpuFrame();", renderer_c)
         self.assertIn("copy_stock_center", renderer_c)
+        self.assertIn("StarFoxEnhancedDrawNativePpuLayers", renderer_c)
+        self.assertIn("if (!native_ppu_done)", renderer_c)
+        self.assertIn("native_shape_overlay_enabled", renderer_c)
+        self.assertIn("SNESRECOMP_ENHANCED_NATIVE_SHAPES", renderer_c)
+        self.assertIn("shape_overlay_enabled && !g_native_snapshot.valid", renderer_c)
+        self.assertIn("!native_ppu_done, &stats", renderer_c)
+        self.assertIn("StarFoxEnhancedDrawNativePpuLayers", native_h)
+        self.assertIn("starfox/render/background_renderer.hpp", native_cpp)
+        self.assertIn("starfox/render/sprite_renderer.hpp", native_cpp)
+        self.assertIn("starfox/simulation/snes_ppu.hpp", native_cpp)
+        self.assertIn("BackgroundRenderer", native_cpp)
+        self.assertIn("SpriteRenderer", native_cpp)
+        self.assertIn("copy_vram_bytes", native_cpp)
+        self.assertIn("copy_oam_bytes", native_cpp)
+        self.assertIn("copy_mode2_horizontal_offsets", native_cpp)
+        self.assertIn("viewport_origin", native_cpp)
+        self.assertIn("widescreen_extra != 0 && ppu.background_mode == 2u", native_cpp)
+        self.assertIn("PPU_bgTileAdr", native_cpp)
+        self.assertIn("PPU_bgTilemapAdr", native_cpp)
         self.assertIn("kGsuDrawList = 0x1960", renderer_c)
         self.assertIn("kGsuDlPtr = 0x0202", renderer_c)
         self.assertIn("snapshot_gsu_draw_list", renderer_c)

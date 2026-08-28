@@ -179,9 +179,12 @@ and StarFoxSNESRecomp now has a bounded `--frames N` run mode for repeatable
 local captures. The first renderer-facing extension is
 `RtlGameInfo.enhanced_render_frame`, which lets a title replace or supplement a
 host presentation buffer only when the game explicitly enables it. Star Fox's
-current implementation owns widescreen output, not a PPU margin supplement. It
-still needs more native layers before it is a replacement for the
-Enhanced native renderer.
+current implementation owns widescreen output, not a PPU margin supplement. The
+native bridge now builds directly against Star Fox Enhanced's
+`BackgroundRenderer` and `SpriteRenderer` for BG/OAM output. The previous local
+C Super FX overlay is disabled by default because it is not faithful enough for
+normal output; full `SoftwareRenderer` parity, text, particles, cockpit HUD, and
+presentation effects still remain.
 
 The concrete follow-up is a small title-neutral presentation diagnostics facade
 that reports:
