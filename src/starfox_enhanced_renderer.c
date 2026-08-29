@@ -438,6 +438,19 @@ static bool native_shape_diagnostics_enabled(void) {
   return enabled != 0;
 }
 
+static int native_shape_diagnostics_frame(void) {
+  static int checked;
+  static int target = -1;
+  if (!checked) {
+    const char *env =
+        getenv("SNESRECOMP_ENHANCED_NATIVE_SHAPE_DIAGNOSTICS_FRAME");
+    if (env && *env)
+      target = atoi(env);
+    checked = 1;
+  }
+  return target;
+}
+
 static bool native_world_gate_diagnostics_enabled(void) {
   static int checked;
   static int enabled;
@@ -456,6 +469,9 @@ static void log_native_shape_diagnostic(
   if (!native_shape_diagnostics_enabled() || !object || !pose || !stats)
     return;
   extern int snes_frame_counter;
+  const int target_frame = native_shape_diagnostics_frame();
+  if (target_frame >= 0 && snes_frame_counter != target_frame)
+    return;
   if (draw_index == 0) {
     fprintf(stderr,
             "[starfox-native-pose] frame=%d world=(%d,%d,%d) "

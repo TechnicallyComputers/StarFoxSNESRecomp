@@ -123,3 +123,5 @@ renderers compose a wider framebuffer from game-specific assets/state.
 Any 16:9/21:9/32:9 capture with non-black garbage in the side columns is a
 native renderer bug. It should be fixed in the native compositor or its Star
 Fox state decode, not by re-enabling the old PPU/Super FX widescreen path.
+`SNESRECOMP_ENHANCED_NATIVE_SHAPE_DIAGNOSTICS_FRAME` can restrict the verbose
+per-shape pose log to one source frame during that analysis.

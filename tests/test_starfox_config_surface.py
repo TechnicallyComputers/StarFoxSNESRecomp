@@ -251,6 +251,7 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
         self.assertIn("decoded_faces", native_h)
         self.assertIn("selected_lod", native_h)
         self.assertIn("SNESRECOMP_ENHANCED_NATIVE_SHAPE_DIAGNOSTICS", renderer_c)
+        self.assertIn("SNESRECOMP_ENHANCED_NATIVE_SHAPE_DIAGNOSTICS_FRAME", renderer_c)
         self.assertIn("log_native_shape_diagnostic", renderer_c)
         self.assertIn("stats->decoded_vertices", native_cpp)
         self.assertIn("stats->decoded_faces", native_cpp)
