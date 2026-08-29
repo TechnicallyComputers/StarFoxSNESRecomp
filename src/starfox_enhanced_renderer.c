@@ -156,15 +156,15 @@ typedef struct NativeRendererStats {
   unsigned lines;
   unsigned line_pixels;
   unsigned native_world_ready;
+  unsigned native_world_suppressed;
 } NativeRendererStats;
 
 static NativeSourceFrameSnapshot g_source_snapshot;
 
 enum {
   kNativeWorldMinActiveObjects = 8,
-  kNativeWorldMinDrawObjects = 4,
   kNativeWorldMinDrawnShapes = 2,
-  kNativeWorldMinVisiblePixels = 1024,
+  kNativeWorldMinVisiblePixels = 4096,
 };
 
 void StarFoxDrawPpuFrame(void);
@@ -421,6 +421,17 @@ static bool native_shape_diagnostics_enabled(void) {
   return enabled != 0;
 }
 
+static bool native_world_gate_diagnostics_enabled(void) {
+  static int checked;
+  static int enabled;
+  if (!checked) {
+    const char *env = getenv("SNESRECOMP_ENHANCED_NATIVE_WORLD_GATE_LOG");
+    enabled = env && *env && strcmp(env, "0") != 0;
+    checked = 1;
+  }
+  return enabled != 0;
+}
+
 static void log_native_shape_diagnostic(
     unsigned draw_index, const NativeSourceObject *object,
     const StarFoxEnhancedNativeShapePose *pose,
@@ -478,14 +489,16 @@ static void log_renderer_stats(const NativeRendererStats *stats,
   fprintf(stderr,
           "[starfox-native] frame=%d size=%dx%d ws_extra=%u "
           "source=%u/%u snap_frame=%d "
-          "entries=%u candidates=%u drawn=%u ready=%u declined_ppu=%u "
+          "entries=%u candidates=%u drawn=%u ready=%u suppress=%u "
+          "declined_ppu=%u "
           "unsupported inv=%u shadow=%u particle=%u scaled=%u text=%u "
           "culled=%u invalid=%u decode=%u vertices=%u faces=%u "
           "filled_faces=%u filled_pixels=%u lines=%u line_pixels=%u\n",
           snes_frame_counter, width, height, ws_extra,
           g_source_snapshot.draw_count, g_source_snapshot.active_count,
           g_source_snapshot.frame, stats->entries, stats->candidates,
-          stats->drawn, stats->native_world_ready, stats->declined_native_ppu,
+          stats->drawn, stats->native_world_ready,
+          stats->native_world_suppressed, stats->declined_native_ppu,
           stats->unsupported_invisible, stats->unsupported_shadow,
           stats->unsupported_particle, stats->unsupported_scaled,
           stats->unsupported_text, stats->unsupported_culled,
@@ -713,8 +726,7 @@ static bool source_snapshot_current(void) {
 static bool source_snapshot_is_gameplay_training_world_frame(void) {
   if (!source_snapshot_current())
     return false;
-  if (g_source_snapshot.active_count < kNativeWorldMinActiveObjects ||
-      g_source_snapshot.draw_count < kNativeWorldMinDrawObjects)
+  if (g_source_snapshot.active_count < kNativeWorldMinActiveObjects)
     return false;
   if (g_source_snapshot.unsupported_text != 0)
     return false;
@@ -726,6 +738,38 @@ static bool native_world_replacement_ready(const NativeRendererStats *stats) {
     return false;
   return stats->drawn >= kNativeWorldMinDrawnShapes &&
          stats->filled_pixels >= kNativeWorldMinVisiblePixels;
+}
+
+static void log_native_world_gate_transition(const NativeRendererStats *stats,
+                                             int raw_ready, int suppress,
+                                             int native_ppu_done) {
+  static int initialized;
+  static int last_raw_ready;
+  static int last_suppress;
+  static int last_native_ppu_done;
+  if (!native_world_gate_diagnostics_enabled() || !stats)
+    return;
+  if (initialized && last_raw_ready == raw_ready &&
+      last_suppress == suppress && last_native_ppu_done == native_ppu_done) {
+    return;
+  }
+  initialized = 1;
+  last_raw_ready = raw_ready;
+  last_suppress = suppress;
+  last_native_ppu_done = native_ppu_done;
+  extern int snes_frame_counter;
+  fprintf(stderr,
+          "[starfox-native-world-gate] frame=%d snap_frame=%d raw_ready=%d "
+          "suppress=%d native_ppu_done=%d source=%u/%u drawn=%u pixels=%u "
+          "unsupported inv=%u shadow=%u particle=%u scaled=%u text=%u "
+          "culled=%u invalid=%u decode=%u\n",
+          snes_frame_counter, g_source_snapshot.frame, raw_ready, suppress,
+          native_ppu_done, g_source_snapshot.draw_count,
+          g_source_snapshot.active_count, stats->drawn, stats->filled_pixels,
+          stats->unsupported_invisible, stats->unsupported_shadow,
+          stats->unsupported_particle, stats->unsupported_scaled,
+          stats->unsupported_text, stats->unsupported_culled,
+          stats->unsupported_invalid, stats->decode_failures);
 }
 
 static unsigned display_frame(uint8_t object_frame) {
@@ -1054,6 +1098,7 @@ StarFoxEnhancedRenderFrame(RtlEnhancedRendererFrame *frame) {
   uint8_t *native_world = NULL;
   unsigned drawn = 0;
   bool native_world_ready = false;
+  bool suppress_superfx_world_bg1 = false;
   memset(&stats, 0, sizeof(stats));
 
   if (shape_overlay_enabled) {
@@ -1064,7 +1109,9 @@ StarFoxEnhancedRenderFrame(RtlEnhancedRendererFrame *frame) {
                                           frame->width, frame->height,
                                           frame->widescreen_extra, &stats);
       native_world_ready = native_world_replacement_ready(&stats);
+      suppress_superfx_world_bg1 = native_world_ready;
       stats.native_world_ready = native_world_ready ? 1u : 0u;
+      stats.native_world_suppressed = suppress_superfx_world_bg1 ? 1u : 0u;
     }
   }
 
@@ -1072,17 +1119,20 @@ StarFoxEnhancedRenderFrame(RtlEnhancedRendererFrame *frame) {
   StarFoxDrawPpuFrame();
   int native_ppu_done = StarFoxEnhancedDrawNativePpuLayers(
       frame->pixels, frame->pitch, frame->width, frame->height,
-      frame->widescreen_extra, native_world_ready ? 1 : 0);
-  if (!native_world_ready && native_ppu_done &&
+      frame->widescreen_extra, suppress_superfx_world_bg1 ? 1 : 0);
+  if (!suppress_superfx_world_bg1 && native_ppu_done &&
       native_frame_looks_suspect(frame)) {
     clear_frame(frame->pixels, frame->pitch, frame->width, frame->height);
     native_ppu_done = 0;
     stats.declined_native_ppu++;
   }
-  if (!native_ppu_done && !native_world_ready)
+  log_native_world_gate_transition(&stats, native_world_ready ? 1 : 0,
+                                   suppress_superfx_world_bg1 ? 1 : 0,
+                                   native_ppu_done);
+  if (!native_ppu_done && !suppress_superfx_world_bg1)
     copy_stock_center(frame);
   if (shape_overlay_enabled) {
-    if (native_world_ready) {
+    if (suppress_superfx_world_bg1) {
       composite_bgra_nonzero(frame->pixels, frame->pitch, native_world,
                              native_world_pitch, frame->width, frame->height);
     }

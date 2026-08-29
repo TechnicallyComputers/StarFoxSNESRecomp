@@ -30,6 +30,11 @@ The compositor
 suppresses the stock Mode 3 BG1 SuperFX world plane only when the current source
 snapshot looks like a gameplay/training world frame and that scratch render
 produced enough visible native pixels to replace the cartridge framebuffer.
+The gate is intentionally output-based: at least eight active source objects,
+two successfully drawn native shapes, 4096 visible native pixels, and no source
+text objects. It does not require a minimum source draw-list count because
+runtime logs showed valid high-coverage native scenes failing solely on that
+pre-render count.
 Otherwise BG1 and the centered stock fallback remain available. This keeps the
 rule conservative for title, map, briefing, and UI frames until their source
 state is separately proven, and it must not re-enable Star Fox PPU/SuperFX
