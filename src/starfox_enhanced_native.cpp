@@ -88,7 +88,8 @@ static const starfox::assets::Shape *cached_shape(NativeShapeAssets &assets,
                                                   std::uint16_t shape_address,
                                                   std::uint16_t colour_pointer,
                                                   double source_depth,
-                                                  bool shadow_shape) {
+                                                  bool shadow_shape,
+                                                  starfox::assets::ShapeHeader *base_header) {
   if (!assets.decoder)
     return nullptr;
   const auto base_key =
@@ -100,6 +101,8 @@ static const starfox::assets::Shape *cached_shape(NativeShapeAssets &assets,
                                                          colour_pointer))
                .first;
   }
+  if (base_header)
+    *base_header = base->second.header;
   const auto selected = shadow_shape
                             ? base->second.header.shadow_pointer
                             : starfox::assets::ShapeDecoder::select_lod_pointer(
@@ -390,6 +393,60 @@ extern "C" int StarFoxEnhancedDrawNativePpuLayers(uint8_t *pixels, size_t pitch,
   return 1;
 }
 
+extern "C" unsigned StarFoxEnhancedDrawCockpitHud(
+    uint8_t *pixels, size_t pitch, int width, int height, const uint8_t *rom,
+    size_t rom_size, uint8_t rotation, uint8_t colour, uint8_t damage_flags,
+    int horizontal_origin, int vertical_origin,
+    uint8_t normal_colour_override) {
+  if (!pixels || pitch < static_cast<std::size_t>(width) * 4u || width <= 0 ||
+      height <= 0 || !rom || rom_size == 0 || vertical_origin >= height)
+    return 0;
+
+  try {
+    auto &assets = shape_assets_for_rom(rom, rom_size);
+    if (!assets.trigonometry)
+      return 0;
+    starfox::render::RenderSettings settings;
+    settings.colour_index_base = 7u * 16u;
+    const starfox::render::SoftwareRenderer renderer{settings};
+    starfox::render::Framebuffer hud(static_cast<std::uint32_t>(width), 192u);
+    hud.clear(0);
+    renderer.draw_cockpit_hud(*assets.trigonometry, rotation, colour,
+                              damage_flags, horizontal_origin, hud,
+                              normal_colour_override);
+
+    unsigned visible = 0;
+    const auto palette_level = brightness(g_ppu);
+    for (std::uint32_t y = 0; y < hud.height(); y++) {
+      const int target_y = vertical_origin + static_cast<int>(y);
+      if (target_y < 0 || target_y >= height)
+        continue;
+      auto *row = pixels + static_cast<std::size_t>(target_y) * pitch;
+      for (std::uint32_t x = 0; x < hud.width(); x++) {
+        const auto palette_index = hud.get(x, y);
+        if (palette_index == 0u)
+          continue;
+        const auto cgram = g_ppu ? g_ppu->cgram[palette_index]
+                                 : static_cast<std::uint16_t>(0);
+        auto *dst = row + static_cast<std::size_t>(x) * 4u;
+        dst[2] = static_cast<std::uint8_t>(
+            static_cast<std::uint16_t>(expand5(cgram)) * palette_level / 15u);
+        dst[1] = static_cast<std::uint8_t>(
+            static_cast<std::uint16_t>(expand5(cgram >> 5u)) * palette_level /
+            15u);
+        dst[0] = static_cast<std::uint8_t>(
+            static_cast<std::uint16_t>(expand5(cgram >> 10u)) * palette_level /
+            15u);
+        dst[3] = 0xff;
+        visible++;
+      }
+    }
+    return visible;
+  } catch (const std::exception &) {
+    return 0;
+  }
+}
+
 extern "C" int
 StarFoxEnhancedDrawNativeShape(uint8_t *pixels, size_t pitch, int width,
                                int height, const uint8_t *rom, size_t rom_size,
@@ -404,9 +461,10 @@ StarFoxEnhancedDrawNativeShape(uint8_t *pixels, size_t pitch, int width,
 
   try {
     auto &assets = shape_assets_for_rom(rom, rom_size);
-    const auto *shape =
-        cached_shape(assets, shape_address, pose->colour_pointer, pose->z,
-                     pose->use_shadow_shape != 0);
+    starfox::assets::ShapeHeader base_header;
+    const auto *shape = cached_shape(
+        assets, shape_address, pose->colour_pointer, pose->z,
+        pose->use_shadow_shape != 0, &base_header);
     if (!shape)
       return 0;
     if (stats) {
@@ -443,6 +501,19 @@ StarFoxEnhancedDrawNativeShape(uint8_t *pixels, size_t pitch, int width,
     render_pose.explosion_progress = pose->explosion_progress;
     render_pose.force_colour = pose->force_colour != 0;
     render_pose.forced_colour = pose->forced_colour;
+    if (pose->simple_scaled_sprite) {
+      auto size_adjustment = static_cast<std::int16_t>(pose->texture_scroll_x);
+      for (std::uint8_t shift = 0; shift < base_header.shift; ++shift) {
+        size_adjustment =
+            starfox::simulation::add16(size_adjustment, size_adjustment);
+      }
+      auto diameter =
+          starfox::simulation::add16(base_header.size, size_adjustment);
+      diameter = starfox::simulation::add16(diameter, diameter);
+      render_pose.simple_scaled_sprite = true;
+      render_pose.simple_sprite_colour = pose->simple_sprite_colour;
+      render_pose.simple_sprite_world_size = diameter != 0 ? diameter : 1;
+    }
     if (pose->use_source_view_matrix && assets.trigonometry) {
       auto object_matrix = starfox::simulation::transpose_q15(
           starfox::simulation::rotation_matrix_q15(

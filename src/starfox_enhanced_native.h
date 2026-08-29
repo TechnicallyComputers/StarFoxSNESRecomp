@@ -27,6 +27,8 @@ typedef struct StarFoxEnhancedNativeShapePose {
   uint8_t flatten_shadow_matrix;
   uint8_t force_colour;
   uint8_t forced_colour;
+  uint8_t simple_scaled_sprite;
+  uint8_t simple_sprite_colour;
   int8_t texture_scroll_x;
   int8_t texture_scroll_y;
   uint32_t animation_frame;
@@ -51,6 +53,11 @@ int StarFoxEnhancedDrawNativeShape(uint8_t *pixels, size_t pitch, int width,
                                    size_t rom_size, uint16_t shape_address,
                                    const StarFoxEnhancedNativeShapePose *pose,
                                    StarFoxEnhancedNativeShapeStats *stats);
+unsigned StarFoxEnhancedDrawCockpitHud(
+    uint8_t *pixels, size_t pitch, int width, int height, const uint8_t *rom,
+    size_t rom_size, uint8_t rotation, uint8_t colour, uint8_t damage_flags,
+    int horizontal_origin, int vertical_origin,
+    uint8_t normal_colour_override);
 
 #ifdef __cplusplus
 }

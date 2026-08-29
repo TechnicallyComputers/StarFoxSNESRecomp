@@ -27,12 +27,15 @@ enum {
   kRamMat11W = 0x15d7,
   kRamWmat11W = 0x161b,
   kRamGameFrame = 0x15bb,
+  kRamHudRotation = 0x154e,
   kGsuVanishX = 0x0034,
   kGsuVanishY = 0x0036,
   kGsuDepthColours = 0x004e,
   kGsuDepthThresholds = 0x0050,
   kGsuPlayerFlyMode = 0x0174,
   kGsuShadowHeight = 0x0204,
+  kGsuHudColour = 0x3512,
+  kGsuHudDamageFlags = 0x3514,
   kObjBase = 0x0336,
   kObjSize = 0x36,
   kObjPoolCount = 0x46,
@@ -121,6 +124,9 @@ typedef struct NativeSourceFrameSnapshot {
   int16_t vanish_y;
   uint8_t player_fly_mode;
   int16_t shadow_height;
+  uint16_t hud_rotation;
+  uint8_t hud_colour;
+  uint8_t hud_damage_flags;
   uint16_t depth_colours;
   uint16_t depth_thresholds;
   unsigned active_count;
@@ -155,6 +161,7 @@ typedef struct NativeRendererStats {
   unsigned filled_pixels;
   unsigned lines;
   unsigned line_pixels;
+  unsigned cockpit_pixels;
   unsigned native_world_ready;
   unsigned native_world_suppressed;
 } NativeRendererStats;
@@ -191,6 +198,13 @@ static SuperFx *current_superfx(void) {
 
 static uint16_t gsu_word(uint16_t address) {
   return gsu_word_from(current_superfx(), address);
+}
+
+static uint8_t gsu_byte(uint16_t address) {
+  const SuperFx *fx = current_superfx();
+  if (!fx || !fx->ram || address >= fx->ram_size)
+    return 0;
+  return fx->ram[address];
 }
 
 static int16_t wrap16_i64(int64_t value) {
@@ -493,7 +507,8 @@ static void log_renderer_stats(const NativeRendererStats *stats,
           "declined_ppu=%u "
           "unsupported inv=%u shadow=%u particle=%u scaled=%u text=%u "
           "culled=%u invalid=%u decode=%u vertices=%u faces=%u "
-          "filled_faces=%u filled_pixels=%u lines=%u line_pixels=%u\n",
+          "filled_faces=%u filled_pixels=%u lines=%u line_pixels=%u "
+          "cockpit_pixels=%u\n",
           snes_frame_counter, width, height, ws_extra,
           g_source_snapshot.draw_count, g_source_snapshot.active_count,
           g_source_snapshot.frame, stats->entries, stats->candidates,
@@ -504,13 +519,12 @@ static void log_renderer_stats(const NativeRendererStats *stats,
           stats->unsupported_text, stats->unsupported_culled,
           stats->unsupported_invalid, stats->decode_failures, stats->vertices,
           stats->faces, stats->filled_faces, stats->filled_pixels, stats->lines,
-          stats->line_pixels);
+          stats->line_pixels, stats->cockpit_pixels);
 }
 
 static bool source_object_has_drawable_shape(const NativeSourceObject *object) {
   return object && object->shape != 0 && object->shape != kShapeNull &&
-         (object->sflags[0] &
-          (kAsfPartObj | kAsfScaledSprite | kAsfTextObj)) == 0 &&
+         (object->sflags[0] & (kAsfPartObj | kAsfTextObj)) == 0 &&
          (object->sflags[3] & kAsfInvisible4) == 0;
 }
 
@@ -605,10 +619,6 @@ static bool classify_and_sort_source_object(NativeSourceFrameSnapshot *snapshot,
     snapshot->unsupported_particle++;
     return false;
   }
-  if ((object->sflags[0] & kAsfScaledSprite) != 0) {
-    snapshot->unsupported_scaled++;
-    return false;
-  }
   if ((object->sflags[0] & kAsfTextObj) != 0) {
     snapshot->unsupported_text++;
     return false;
@@ -701,6 +711,9 @@ void StarFoxEnhancedLatchSourceFrame(void) {
     snapshot.vanish_y = add16(source_vanish_y, kSuperFxVerticalInset);
     snapshot.player_fly_mode = (uint8_t)gsu_word(kGsuPlayerFlyMode);
     snapshot.shadow_height = (int16_t)gsu_word(kGsuShadowHeight);
+    snapshot.hud_rotation = ram_word(kRamHudRotation);
+    snapshot.hud_colour = gsu_byte(kGsuHudColour);
+    snapshot.hud_damage_flags = gsu_byte(kGsuHudDamageFlags);
     snapshot.depth_colours =
         gsu_depth_colours != 0 ? gsu_depth_colours : ram_word(kRamDepthTabPtr);
     snapshot.depth_thresholds = gsu_depth_thresholds != 0
@@ -817,6 +830,10 @@ static void fill_native_shape_pose(StarFoxEnhancedNativeShapePose *pose,
   pose->use_source_view_matrix = 1;
   pose->texture_scroll_x = object->texture_scroll_x;
   pose->texture_scroll_y = object->texture_scroll_y;
+  if ((object->sflags[0] & kAsfScaledSprite) != 0) {
+    pose->simple_scaled_sprite = 1;
+    pose->simple_sprite_colour = object->object_depth_offset;
+  }
   pose->animation_frame = display_frame(object->animation_frame);
   pose->colour_frame = display_frame(object->colour_frame);
   memcpy(pose->source_view_matrix, g_source_snapshot.view_matrix,
@@ -907,6 +924,20 @@ draw_source_snapshot_shapes(uint8_t *pixels, size_t pitch, int width,
                                         ws_extra, i, object, 0,
                                         renderer_stats);
     }
+  }
+  if ((g_source_snapshot.hud_rotation & 0x8000u) != 0) {
+    const uint8_t override =
+        g_source_snapshot.hud_colour >= 128u ? g_source_snapshot.hud_colour
+                                            : 0u;
+    const unsigned cockpit_pixels = StarFoxEnhancedDrawCockpitHud(
+        pixels, pitch, width, height, cart->rom, cart->romSize,
+        (uint8_t)g_source_snapshot.hud_rotation,
+        g_source_snapshot.hud_colour, g_source_snapshot.hud_damage_flags,
+        (int)ws_extra + kSuperFxHorizontalInset, kSuperFxVerticalInset,
+        override);
+    drawn += cockpit_pixels != 0 ? 1u : 0u;
+    if (renderer_stats)
+      renderer_stats->cockpit_pixels += cockpit_pixels;
   }
   return drawn;
 }

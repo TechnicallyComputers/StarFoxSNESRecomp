@@ -63,9 +63,15 @@ RAM is intentionally not used as visible geometry because it can be stale or
 zeroed outside the source task. The shadow renderer follows Enhanced's two-pass
 order and shadow-shape/flattened-matrix rules, but runtime validation has not
 yet observed the required `M_PFM` shadow bit at the current post-frame latch;
-the pass therefore remains provisional. The WRAM bridge remains diagnostic
+the pass therefore remains provisional. Retail scaled-sprite objects now stay
+in the source draw order and use Enhanced's simple scaled-sprite raster path,
+including the source header size adjustment and per-object colour. The native
+world pass also calls
+Enhanced's `draw_cockpit_hud` when retail `HUDROT=$154e` is enabled, using the
+source `M_HUDCOLOUR=$3512` and `M_HUDFLAGS=$3514` state and the same centered
+224-pixel cockpit viewport as the PC port. The WRAM bridge remains diagnostic
 until terrain/grid, working shadow state, particles, scaled sprites, text,
-cockpit/HUD shape coverage, and gameplay validation are complete.
+remaining HUD coverage, and gameplay validation are complete.
 
 The renderer's ROM data symbols must also match the retail cartridge, not the
 linked Enhanced build. Byte-pattern validation against the pinned reference
@@ -98,9 +104,9 @@ renderers compose a wider framebuffer from game-specific assets/state.
 |---|---|---|
 | `src/simulation/wdc65816.cpp` symbol lookup and draw interception | `recomp/bank*.cfg` `symbol` overlay plus `StarFoxEnhancedLatchSourceFrame` feeding `StarFoxEnhancedRenderFrame` | Modified-build symbols imported; native shape snapshots now use runtime-proven retail object-list/camera addresses instead of Enhanced RAM offsets |
 | `include/starfox/render/software_renderer.hpp` `RenderPose` | `StarFoxEnhancedDrawNativeShape` | Provisional bridge; disabled by default pending gameplay validation |
-| `src/render/software_renderer.cpp` shape transform, source projection, clipping, BSP ordering, face fill | `StarFoxEnhancedDrawNativeShape` via pinned Enhanced sources | Linked and callable for normal solid objects from WRAM object state |
+| `src/render/software_renderer.cpp` shape transform, source projection, clipping, BSP ordering, face fill, simple scaled sprites | `StarFoxEnhancedDrawNativeShape` via pinned Enhanced sources | Linked and callable for solid and scaled-sprite objects from WRAM object state |
 | `src/render/background_renderer.cpp` BG1/BG2/BG3 native tile composition | `src/starfox_enhanced_native.cpp` | Direct Enhanced renderer bridge for native BG layers |
-| `src/render/sprite_renderer.cpp`, scaled text, particles, cockpit HUD | `src/starfox_enhanced_native.cpp` for OAM only; text/effects/HUD pending | OAM bridge present; text/effects/HUD parity needed |
+| `src/render/sprite_renderer.cpp`, scaled text, particles, cockpit HUD | `src/starfox_enhanced_native.cpp` for OAM and cockpit HUD; text/effects pending | OAM and MHUD line bridge present; text/effects parity needed |
 | timing interpolation in `tests/timing_tests.cpp` and simulation snapshots | presentation history and fixed duplicate-present scheduling | Not yet interpolation |
 
 ## Validation Rule
