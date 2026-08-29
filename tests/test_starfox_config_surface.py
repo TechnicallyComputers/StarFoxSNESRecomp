@@ -156,6 +156,8 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
         self.assertIn("copy_vram_bytes", native_cpp)
         self.assertIn("copy_oam_bytes", native_cpp)
         self.assertIn("copy_mode2_horizontal_offsets", native_cpp)
+        self.assertIn("out.bg2_vertical_offsets_enabled = out.background_mode == 2u", native_cpp)
+        self.assertNotIn("if (g_ram[kRamDoVofs])", native_cpp)
         self.assertIn("viewport_origin", native_cpp)
         self.assertIn("widescreen_extra != 0 && ppu.background_mode == 2u", native_cpp)
         self.assertIn("PPU_bgTileAdr", native_cpp)

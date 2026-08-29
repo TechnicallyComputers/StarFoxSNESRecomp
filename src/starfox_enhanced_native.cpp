@@ -33,7 +33,6 @@ enum {
   kRamHdmbg2Hofs2 = 0x1934,
   kRamBg2Scroll = 0x19ca,
   kRamDoHofs = 0x19d0,
-  kRamDoVofs = 0x19d1,
   kRomDepthTables = 0x038f9a,
 };
 
@@ -192,8 +191,11 @@ static starfox::simulation::SnesPpuState make_ppu_state(const Ppu *ppu) {
   out.bg3_scroll_y = static_cast<std::int16_t>(ppu->vScroll[2]);
   out.main_screen = ppu->screenEnabled[0];
 
-  if (g_ram[kRamDoVofs])
-    out.bg2_vertical_offsets_enabled = true;
+  // Offset-per-tile lookup is a property of SNES Mode 2. DOVOFS controls
+  // whether the game refreshes its table, but is already clear by the
+  // post-frame presentation latch while the uploaded BG3 entries remain live.
+  // Their validity bits decide which columns actually override BG2.
+  out.bg2_vertical_offsets_enabled = out.background_mode == 2u;
   copy_mode2_horizontal_offsets(out);
   return out;
 }

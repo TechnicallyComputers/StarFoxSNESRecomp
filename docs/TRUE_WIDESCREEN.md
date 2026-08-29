@@ -23,6 +23,10 @@ PPU/HDMA render state, renders BG1/BG2/BG3 and OAM through Star Fox Enhanced's
 `BackgroundRenderer` and `SpriteRenderer` into an indexed framebuffer from raw
 PPU VRAM/CGRAM/OAM/register state, and converts that framebuffer to the host
 BGRA target.
+Mode 2 offset-per-tile state is enabled from the live PPU mode rather than the
+transient retail `DOVOFS` calculation request. By post-frame, `DOVOFS` can be
+clear even though BG3 VRAM still contains the active validity-tagged offsets;
+following the PPU mode preserves Corneria's mountains and perspective ground.
 
 Enhanced native scene replacement renders native shapes and the provisional
 shadow pass into a transparent scratch BGRA buffer before composing PPU layers.
