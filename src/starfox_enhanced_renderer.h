@@ -3,7 +3,8 @@
 
 #include "common_cpu_infra.h"
 
-RtlEnhancedRenderResult StarFoxEnhancedRenderFrame(
-    RtlEnhancedRendererFrame *frame);
+RtlEnhancedRenderResult
+StarFoxEnhancedRenderFrame(RtlEnhancedRendererFrame *frame);
+void StarFoxEnhancedLatchSourceFrame(void);
 
 #endif

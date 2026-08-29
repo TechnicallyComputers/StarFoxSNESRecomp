@@ -11,6 +11,7 @@ extern "C" {
 #include "starfox/render/framebuffer.hpp"
 #include "starfox/render/software_renderer.hpp"
 #include "starfox/render/sprite_renderer.hpp"
+#include "starfox/simulation/math.hpp"
 #include "starfox/simulation/snes_ppu.hpp"
 
 #include <algorithm>
@@ -33,7 +34,7 @@ enum {
   kRamBg2Scroll = 0x19ca,
   kRamDoHofs = 0x19d0,
   kRamDoVofs = 0x19d1,
-  kRomDepthTables = 0x038f7a,
+  kRomDepthTables = 0x038f9a,
 };
 
 using ShapeCacheKey = std::uint32_t;
@@ -43,23 +44,23 @@ struct NativeShapeAssets {
   std::size_t rom_size{};
   std::unique_ptr<starfox::assets::RomImage> rom;
   std::unique_ptr<starfox::assets::ShapeDecoder> decoder;
+  std::unique_ptr<starfox::simulation::TrigTables> trigonometry;
   std::unordered_map<ShapeCacheKey, starfox::assets::Shape> shapes;
 };
 
 static starfox::assets::SymbolMap native_symbol_map() {
-  return starfox::assets::SymbolMap::parse(
-      "SHADESTAB2_0 $038b0a\n"
-      "SHADESTAB2_1 $038b22\n"
-      "SHADESTAB2_2 $038b3a\n"
-      "SHADESTAB2_3 $038b52\n"
-      "DEPTHTABLES $038f7a\n"
-      "SINTAB $008b62\n"
-      "COSTAB $008ba2\n"
-      "SINTAB16 $008ca2\n"
-      "TEXTUREADDRTAB $038918\n"
-      "TEXTUREXYTAB $038a3e\n"
-      "ID_0_C $038213\n"
-      "NULLSHAPE $009500\n");
+  return starfox::assets::SymbolMap::parse("SHADESTAB2_0 $038b2a\n"
+                                           "SHADESTAB2_1 $038b42\n"
+                                           "SHADESTAB2_2 $038b5a\n"
+                                           "SHADESTAB2_3 $038b72\n"
+                                           "DEPTHTABLES $038f9a\n"
+                                           "SINTAB $0098a5\n"
+                                           "COSTAB $0098e5\n"
+                                           "SINTAB16 $0099e5\n"
+                                           "TEXTUREADDRTAB $038918\n"
+                                           "TEXTUREXYTAB $038a3e\n"
+                                           "ID_0_C $038213\n"
+                                           "NULLSHAPE $00aca1\n");
 }
 
 static NativeShapeAssets &shape_assets_for_rom(const std::uint8_t *rom,
@@ -74,39 +75,45 @@ static NativeShapeAssets &shape_assets_for_rom(const std::uint8_t *rom,
   assets = {};
   assets.rom_pointer = rom;
   assets.rom_size = rom_size;
-  assets.rom =
-      std::make_unique<starfox::assets::RomImage>(std::move(bytes));
+  assets.rom = std::make_unique<starfox::assets::RomImage>(std::move(bytes));
   auto symbols = native_symbol_map();
   assets.decoder =
       std::make_unique<starfox::assets::ShapeDecoder>(*assets.rom, symbols);
+  assets.trigonometry = std::make_unique<starfox::simulation::TrigTables>(
+      starfox::simulation::TrigTables::load(*assets.rom, symbols));
   return assets;
 }
 
 static const starfox::assets::Shape *cached_shape(NativeShapeAssets &assets,
                                                   std::uint16_t shape_address,
                                                   std::uint16_t colour_pointer,
-                                                  double source_depth) {
+                                                  double source_depth,
+                                                  bool shadow_shape) {
   if (!assets.decoder)
     return nullptr;
   const auto base_key =
       (static_cast<ShapeCacheKey>(shape_address) << 16u) | colour_pointer;
   auto base = assets.shapes.find(base_key);
   if (base == assets.shapes.end()) {
-    base = assets.shapes.emplace(base_key, assets.decoder->decode(
-                                               shape_address, {},
-                                               colour_pointer))
+    base = assets.shapes
+               .emplace(base_key, assets.decoder->decode(shape_address, {},
+                                                         colour_pointer))
                .first;
   }
-  const auto selected = starfox::assets::ShapeDecoder::select_lod_pointer(
-      base->second.header, source_depth);
+  const auto selected = shadow_shape
+                            ? base->second.header.shadow_pointer
+                            : starfox::assets::ShapeDecoder::select_lod_pointer(
+                                  base->second.header, source_depth);
+  if (selected == 0u)
+    return nullptr;
   const auto shape_key =
       (static_cast<ShapeCacheKey>(selected) << 16u) | colour_pointer;
   auto shape = assets.shapes.find(shape_key);
   if (shape == assets.shapes.end()) {
-    shape = assets.shapes.emplace(shape_key,
-                                  assets.decoder->decode_lod(
-                                      base->second.header, selected,
-                                      colour_pointer))
+    shape = assets.shapes
+                .emplace(shape_key,
+                         assets.decoder->decode_lod(base->second.header,
+                                                    selected, colour_pointer))
                 .first;
   }
   return &shape->second;
@@ -120,8 +127,8 @@ static std::uint16_t ram_word(std::uint32_t address) {
 static std::uint16_t ram_word16(std::uint16_t address) {
   return static_cast<std::uint16_t>(g_ram[address]) |
          static_cast<std::uint16_t>(
-             static_cast<std::uint16_t>(g_ram[static_cast<std::uint16_t>(
-                 address + 1u)])
+             static_cast<std::uint16_t>(
+                 g_ram[static_cast<std::uint16_t>(address + 1u)])
              << 8u);
 }
 
@@ -144,18 +151,16 @@ static void copy_oam_bytes(starfox::simulation::SnesPpuState &out,
   std::memcpy(out.oam.data() + 0x200u, ppu->highOam, 0x20u);
 }
 
-static void copy_mode2_horizontal_offsets(
-    starfox::simulation::SnesPpuState &out) {
+static void
+copy_mode2_horizontal_offsets(starfox::simulation::SnesPpuState &out) {
   if (!g_ram[kRamDoHofs])
     return;
   out.bg2_horizontal_offsets_enabled = true;
   const std::uint16_t source = ram_word(kRamHdmbg2Hofs2);
   for (std::size_t line = 0; line < out.bg2_horizontal_offsets.size(); line++) {
-    const std::uint16_t record =
-        static_cast<std::uint16_t>(source + line * 3u);
-    out.bg2_horizontal_offsets[line] =
-        static_cast<std::int16_t>(ram_word16(static_cast<std::uint16_t>(
-            record + 1u)));
+    const std::uint16_t record = static_cast<std::uint16_t>(source + line * 3u);
+    out.bg2_horizontal_offsets[line] = static_cast<std::int16_t>(
+        ram_word16(static_cast<std::uint16_t>(record + 1u)));
   }
 }
 
@@ -229,8 +234,8 @@ static void write_bgra(const starfox::render::Framebuffer &source,
   }
 }
 
-static std::size_t count_visible_pixels(
-    const starfox::render::Framebuffer &framebuffer) {
+static std::size_t
+count_visible_pixels(const starfox::render::Framebuffer &framebuffer) {
   std::size_t count = 0;
   for (std::uint32_t y = 0; y < framebuffer.height(); y++) {
     for (std::uint32_t x = 0; x < framebuffer.width(); x++) {
@@ -254,6 +259,18 @@ static std::size_t count_visible_pixels(const std::uint8_t *pixels,
     }
   }
   return count;
+}
+
+static starfox::simulation::MatrixQ15
+matrix_from_pose(const StarFoxEnhancedNativeShapePose *pose) {
+  starfox::simulation::MatrixQ15 matrix{};
+  for (std::size_t i = 0; i < matrix.size(); i++)
+    matrix[i] = pose->source_view_matrix[i];
+  return matrix;
+}
+
+static std::int16_t negated_source_angle(std::uint16_t angle) {
+  return starfox::simulation::wrap16(-static_cast<std::int32_t>(angle));
 }
 
 static void maybe_log_native_ppu(const Ppu *ppu,
@@ -285,7 +302,8 @@ static void maybe_log_native_ppu(const Ppu *ppu,
 
 static void draw_mode_layers(const starfox::simulation::SnesPpuState &ppu,
                              starfox::render::Framebuffer &framebuffer,
-                             std::uint16_t widescreen_extra) {
+                             std::uint16_t widescreen_extra,
+                             bool suppress_superfx_world_bg1) {
   const starfox::render::BackgroundRenderer background_renderer;
   const starfox::render::SpriteRenderer sprite_renderer;
   const auto all = starfox::render::TilePriorityPass::all;
@@ -294,29 +312,25 @@ static void draw_mode_layers(const starfox::simulation::SnesPpuState &ppu,
   const std::int32_t viewport_origin =
       static_cast<std::int32_t>(widescreen_extra);
   const bool extend_scene = widescreen_extra != 0 && ppu.background_mode == 2u;
-  const auto bg2_scroll_x =
-      static_cast<std::int16_t>(ram_word(kRamBg2XScroll));
-  const auto bg2_scroll_y =
-      static_cast<std::int16_t>(ram_word(kRamBg2Scroll));
+  const auto bg2_scroll_x = static_cast<std::int16_t>(ram_word(kRamBg2XScroll));
+  const auto bg2_scroll_y = static_cast<std::int16_t>(ram_word(kRamBg2Scroll));
 
   if (ppu.background_mode == 1u) {
-    background_renderer.draw_bg3(ppu, framebuffer, low, viewport_origin,
-                                 false);
+    background_renderer.draw_bg3(ppu, framebuffer, low, viewport_origin, false);
     sprite_renderer.draw_objects(ppu, framebuffer, 0u, viewport_origin, false);
     if (!ppu.bg3_high_priority) {
       background_renderer.draw_bg3(ppu, framebuffer, high, viewport_origin,
                                    false);
     }
     sprite_renderer.draw_objects(ppu, framebuffer, 1u, viewport_origin, false);
-    background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y,
-                                 framebuffer, low, viewport_origin, false);
+    background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y, framebuffer,
+                                 low, viewport_origin, false);
     sprite_renderer.draw_objects(ppu, framebuffer, 2u, viewport_origin, false);
-    background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y,
-                                 framebuffer, high, viewport_origin, false);
+    background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y, framebuffer,
+                                 high, viewport_origin, false);
   } else if (ppu.background_mode == 2u) {
-    background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y,
-                                 framebuffer, low, viewport_origin,
-                                 extend_scene);
+    background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y, framebuffer,
+                                 low, viewport_origin, extend_scene);
     sprite_renderer.draw_objects(ppu, framebuffer, 0u, viewport_origin,
                                  extend_scene);
     sprite_renderer.draw_objects(ppu, framebuffer, 1u, viewport_origin,
@@ -326,23 +340,25 @@ static void draw_mode_layers(const starfox::simulation::SnesPpuState &ppu,
     sprite_renderer.draw_objects(ppu, framebuffer, 2u, viewport_origin,
                                  extend_scene);
   } else if (ppu.background_mode == 3u) {
-    background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y,
-                                 framebuffer, low, viewport_origin, false);
+    background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y, framebuffer,
+                                 low, viewport_origin, false);
     sprite_renderer.draw_objects(ppu, framebuffer, 0u, viewport_origin, false);
-    background_renderer.draw_bg1(ppu, framebuffer, low, viewport_origin,
-                                 false);
+    // Diagnostic native scene replacement removes only the SuperFX world plane;
+    // BG2 and OAM stay in the same order as Enhanced's PPU presenter.
+    if (!suppress_superfx_world_bg1)
+      background_renderer.draw_bg1(ppu, framebuffer, low, viewport_origin,
+                                   false);
     sprite_renderer.draw_objects(ppu, framebuffer, 1u, viewport_origin, false);
-    background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y,
-                                 framebuffer, high, viewport_origin, false);
+    background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y, framebuffer,
+                                 high, viewport_origin, false);
     sprite_renderer.draw_objects(ppu, framebuffer, 2u, viewport_origin, false);
-    background_renderer.draw_bg1(ppu, framebuffer, high, viewport_origin,
-                                 false);
+    if (!suppress_superfx_world_bg1)
+      background_renderer.draw_bg1(ppu, framebuffer, high, viewport_origin,
+                                   false);
   } else {
-    background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y,
-                                 framebuffer, all, viewport_origin,
-                                 extend_scene);
-    background_renderer.draw_bg3(ppu, framebuffer, all, viewport_origin,
-                                 false);
+    background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y, framebuffer,
+                                 all, viewport_origin, extend_scene);
+    background_renderer.draw_bg3(ppu, framebuffer, all, viewport_origin, false);
     for (std::uint8_t priority = 0; priority < 3u; priority++) {
       sprite_renderer.draw_objects(ppu, framebuffer, priority, viewport_origin,
                                    extend_scene);
@@ -352,10 +368,10 @@ static void draw_mode_layers(const starfox::simulation::SnesPpuState &ppu,
 
 } // namespace
 
-extern "C" int StarFoxEnhancedDrawNativePpuLayers(uint8_t *pixels,
-                                                  size_t pitch, int width,
-                                                  int height,
-                                                  uint16_t widescreen_extra) {
+extern "C" int StarFoxEnhancedDrawNativePpuLayers(uint8_t *pixels, size_t pitch,
+                                                  int width, int height,
+                                                  uint16_t widescreen_extra,
+                                                  int suppress_superfx_world_bg1) {
   if (!g_ppu || !pixels || pitch < static_cast<size_t>(width) * 4u ||
       width <= 0 || height <= 0)
     return 0;
@@ -364,7 +380,8 @@ extern "C" int StarFoxEnhancedDrawNativePpuLayers(uint8_t *pixels,
   starfox::render::Framebuffer framebuffer(static_cast<std::uint32_t>(width),
                                            static_cast<std::uint32_t>(height));
   framebuffer.clear(0);
-  draw_mode_layers(ppu_state, framebuffer, widescreen_extra);
+  draw_mode_layers(ppu_state, framebuffer, widescreen_extra,
+                   suppress_superfx_world_bg1 != 0);
   const auto visible_pixels = count_visible_pixels(framebuffer);
   maybe_log_native_ppu(g_ppu, ppu_state, widescreen_extra, visible_pixels);
   if (visible_pixels == 0)
@@ -373,11 +390,12 @@ extern "C" int StarFoxEnhancedDrawNativePpuLayers(uint8_t *pixels,
   return 1;
 }
 
-extern "C" int StarFoxEnhancedDrawNativeShape(
-    uint8_t *pixels, size_t pitch, int width, int height, const uint8_t *rom,
-    size_t rom_size, uint16_t shape_address,
-    const StarFoxEnhancedNativeShapePose *pose,
-    StarFoxEnhancedNativeShapeStats *stats) {
+extern "C" int
+StarFoxEnhancedDrawNativeShape(uint8_t *pixels, size_t pitch, int width,
+                               int height, const uint8_t *rom, size_t rom_size,
+                               uint16_t shape_address,
+                               const StarFoxEnhancedNativeShapePose *pose,
+                               StarFoxEnhancedNativeShapeStats *stats) {
   if (stats)
     std::memset(stats, 0, sizeof(*stats));
   if (!pixels || pitch < static_cast<std::size_t>(width) * 4u || width <= 0 ||
@@ -386,10 +404,20 @@ extern "C" int StarFoxEnhancedDrawNativeShape(
 
   try {
     auto &assets = shape_assets_for_rom(rom, rom_size);
-    const auto *shape = cached_shape(assets, shape_address,
-                                     pose->colour_pointer, pose->z);
+    const auto *shape =
+        cached_shape(assets, shape_address, pose->colour_pointer, pose->z,
+                     pose->use_shadow_shape != 0);
     if (!shape)
       return 0;
+    if (stats) {
+      stats->decoded_vertices =
+          static_cast<unsigned>(std::min<std::size_t>(shape->vertices.size(),
+                                                      UINT32_MAX));
+      stats->decoded_faces =
+          static_cast<unsigned>(std::min<std::size_t>(shape->faces.size(),
+                                                      UINT32_MAX));
+      stats->selected_lod = static_cast<std::uint16_t>(shape->header.address);
+    }
 
     starfox::render::RenderSettings settings;
     settings.colour_index_base = 7u * 16u;
@@ -412,6 +440,24 @@ extern "C" int StarFoxEnhancedDrawNativeShape(
     render_pose.colour_frame = pose->colour_frame;
     render_pose.texture_scroll_x = pose->texture_scroll_x;
     render_pose.texture_scroll_y = pose->texture_scroll_y;
+    render_pose.explosion_progress = pose->explosion_progress;
+    render_pose.force_colour = pose->force_colour != 0;
+    render_pose.forced_colour = pose->forced_colour;
+    if (pose->use_source_view_matrix && assets.trigonometry) {
+      auto object_matrix = starfox::simulation::transpose_q15(
+          starfox::simulation::rotation_matrix_q15(
+              *assets.trigonometry, negated_source_angle(pose->pitch),
+              negated_source_angle(pose->yaw),
+              negated_source_angle(pose->roll)));
+      if (pose->flatten_shadow_matrix) {
+        object_matrix[1] = 0;
+        object_matrix[4] = 0;
+        object_matrix[7] = 0;
+      }
+      render_pose.rotation_matrix = starfox::simulation::multiply_matrix_q15(
+          object_matrix, matrix_from_pose(pose));
+      render_pose.use_rotation_matrix = true;
+    }
     starfox::render::apply_source_depth_tables(
         *assets.rom, kRomDepthTables, pose->depth_thresholds,
         pose->depth_colours, pose->object_depth_offset, render_pose);
@@ -429,11 +475,9 @@ extern "C" int StarFoxEnhancedDrawNativeShape(
         const auto cgram =
             g_ppu ? g_ppu->cgram[colour] : static_cast<std::uint16_t>(0);
         const std::uint8_t r = static_cast<std::uint8_t>(
-            (static_cast<std::uint16_t>(expand5(cgram)) * palette_level) /
-            15u);
+            (static_cast<std::uint16_t>(expand5(cgram)) * palette_level) / 15u);
         const std::uint8_t g = static_cast<std::uint8_t>(
-            (static_cast<std::uint16_t>(expand5(cgram >> 5u)) *
-             palette_level) /
+            (static_cast<std::uint16_t>(expand5(cgram >> 5u)) * palette_level) /
             15u);
         const std::uint8_t b = static_cast<std::uint8_t>(
             (static_cast<std::uint16_t>(expand5(cgram >> 10u)) *
@@ -448,8 +492,8 @@ extern "C" int StarFoxEnhancedDrawNativeShape(
       }
     }
     if (stats)
-      stats->visible_pixels = static_cast<unsigned>(
-          std::min<std::size_t>(visible, UINT32_MAX));
+      stats->visible_pixels =
+          static_cast<unsigned>(std::min<std::size_t>(visible, UINT32_MAX));
     return visible != 0 ? 1 : 0;
   } catch (const std::exception &) {
     if (stats)

@@ -3,8 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "config.h"
 #include "common_cpu_infra.h"
+#include "config.h"
 #include "cpu_state.h"
 #include "snes/cart.h"
 #include "snes/dma.h"
@@ -12,6 +12,7 @@
 #include "snes/ppu.h"
 #include "snes/snes.h"
 #include "snes/superfx.h"
+#include "starfox_enhanced_renderer.h"
 
 uint16 counter_global_frames;
 
@@ -26,7 +27,8 @@ enum {
   kCrosshairObjPaletteFirst = 128 + 4 * 16,
   kCrosshairTintPaletteIndex = kCrosshairObjPaletteFirst + 15,
   kSuperFxHudColour = 0x3512,
-  kRamAllst = 0x12ad,
+  kRamAllst = 0x121d,
+  kRamAlFreeLst = 0x121f,
   kRamInternalPlayPt = 0x162c,
   kRamPShipFlags3 = 0x1563,
   kRamSpecialDelay = 0x15b1,
@@ -34,8 +36,8 @@ enum {
   kRamPcBoxObjLw = 0x15ee,
   kRamPcBoxObjRw = 0x15f0,
   kRamPcBoxObjB = 0x15f2,
-  kObjBase = 0x0338,
-  kObjSize = 0x38,
+  kObjBase = 0x0336,
+  kObjSize = 0x36,
   kObjCount = 0x46,
   kObjNext = 0x00,
   kObjShape = 0x04,
@@ -73,28 +75,44 @@ static bool crosshair_tint555(uint8_t color, uint8_t *r, uint8_t *g,
                               uint8_t *b) {
   switch (color) {
   case kCrosshairColor_White:
-    *r = 31; *g = 31; *b = 31;
+    *r = 31;
+    *g = 31;
+    *b = 31;
     return true;
   case kCrosshairColor_Green:
-    *r = 8; *g = 31; *b = 12;
+    *r = 8;
+    *g = 31;
+    *b = 12;
     return true;
   case kCrosshairColor_Blue:
-    *r = 9; *g = 17; *b = 31;
+    *r = 9;
+    *g = 17;
+    *b = 31;
     return true;
   case kCrosshairColor_Red:
-    *r = 31; *g = 8; *b = 8;
+    *r = 31;
+    *g = 8;
+    *b = 8;
     return true;
   case kCrosshairColor_Yellow:
-    *r = 31; *g = 28; *b = 8;
+    *r = 31;
+    *g = 28;
+    *b = 8;
     return true;
   case kCrosshairColor_Cyan:
-    *r = 8; *g = 29; *b = 31;
+    *r = 8;
+    *g = 29;
+    *b = 31;
     return true;
   case kCrosshairColor_Magenta:
-    *r = 31; *g = 12; *b = 31;
+    *r = 31;
+    *g = 12;
+    *b = 31;
     return true;
   case kCrosshairColor_Orange:
-    *r = 31; *g = 19; *b = 6;
+    *r = 31;
+    *g = 19;
+    *b = 6;
     return true;
   default:
     return false;
@@ -103,8 +121,7 @@ static bool crosshair_tint555(uint8_t color, uint8_t *r, uint8_t *g,
 
 static bool starfox_apply_crosshair_tint(uint16_t saved[16]) {
   uint8_t tint_r, tint_g, tint_b;
-  if (!crosshair_tint555(g_config.crosshair_color, &tint_r, &tint_g,
-                         &tint_b))
+  if (!crosshair_tint555(g_config.crosshair_color, &tint_r, &tint_g, &tint_b))
     return false;
 
   uint16_t *palette = &g_ppu->cgram[kCrosshairObjPaletteFirst];
@@ -115,7 +132,8 @@ static bool starfox_apply_crosshair_tint(uint16_t saved[16]) {
     const uint8_t source_g = (source >> 5) & 0x1f;
     const uint8_t source_b = (source >> 10) & 0x1f;
     uint8_t intensity = source_r > source_g ? source_r : source_g;
-    if (source_b > intensity) intensity = source_b;
+    if (source_b > intensity)
+      intensity = source_b;
     palette[i] = rgb555((uint8_t)(tint_r * intensity / 31),
                         (uint8_t)(tint_g * intensity / 31),
                         (uint8_t)(tint_b * intensity / 31));
@@ -232,20 +250,19 @@ static void starfox_apply_god_mode_state(void) {
 }
 
 static bool starfox_object_is_player_part(uint16_t pointer) {
-  return pointer != 0 &&
-         (pointer == wram_read16(kRamInternalPlayPt) ||
-          pointer == wram_read16(kRamPcBoxObjB) ||
-          pointer == wram_read16(kRamPcBoxObjLw) ||
-          pointer == wram_read16(kRamPcBoxObjRw));
+  return pointer != 0 && (pointer == wram_read16(kRamInternalPlayPt) ||
+                          pointer == wram_read16(kRamPcBoxObjB) ||
+                          pointer == wram_read16(kRamPcBoxObjLw) ||
+                          pointer == wram_read16(kRamPcBoxObjRw));
 }
 
 static bool starfox_god_nuke_shape_damage_only(uint16_t shape) {
   static const uint16_t kDamageOnlyShapes[] = {
-    0xa6ef, 0xa70b, 0xa727, 0xa743, 0xa75f, 0xa77b,
+      0xa6ef, 0xa70b, 0xa727, 0xa743, 0xa75f, 0xa77b,
   };
-  return starfox_pointer_in_array(
-      shape, kDamageOnlyShapes,
-      sizeof(kDamageOnlyShapes) / sizeof(kDamageOnlyShapes[0]));
+  return starfox_pointer_in_array(shape, kDamageOnlyShapes,
+                                  sizeof(kDamageOnlyShapes) /
+                                      sizeof(kDamageOnlyShapes[0]));
 }
 
 static bool starfox_god_nuke_shape_skip(uint16_t shape) {
@@ -319,8 +336,7 @@ void StarFoxEnhancedPreFrame(uint32 inputs) {
   s_nukes_before_count = 0;
   if (s_bomb_pressed &&
       !starfox_collect_active_nukes(
-          s_nukes_before,
-          sizeof(s_nukes_before) / sizeof(s_nukes_before[0]),
+          s_nukes_before, sizeof(s_nukes_before) / sizeof(s_nukes_before[0]),
           &s_nukes_before_count)) {
     s_bomb_pressed = false;
     s_god_nuke_request = false;
@@ -328,6 +344,7 @@ void StarFoxEnhancedPreFrame(uint32 inputs) {
 }
 
 void StarFoxEnhancedPostFrame(uint32 inputs) {
+  StarFoxEnhancedLatchSourceFrame();
   (void)inputs;
   starfox_restore_superfx_crosshair_tint();
   if (!g_config.god_mode) {
@@ -390,11 +407,12 @@ void StarFoxEnhancedPostFrame(uint32 inputs) {
 static void schedule_first_vblank(void) {
   uint32_t delta;
   if (g_snes->vPos < kSnesVblankStartLine) {
-    delta = (kSnesVblankStartLine - g_snes->vPos) *
-            kSnesMasterClocksPerLine - g_snes->hPos;
+    delta = (kSnesVblankStartLine - g_snes->vPos) * kSnesMasterClocksPerLine -
+            g_snes->hPos;
   } else {
     delta = (kSnesLinesPerFrame - g_snes->vPos + kSnesVblankStartLine) *
-            kSnesMasterClocksPerLine - g_snes->hPos;
+                kSnesMasterClocksPerLine -
+            g_snes->hPos;
   }
   s_next_vblank_master = g_cpu.master_cycles + delta;
 }
@@ -405,9 +423,8 @@ static uint32_t clocks_until_timer_irq(void) {
 
   const uint32_t line_clocks = kSnesMasterClocksPerLine;
   const uint32_t frame_clocks = line_clocks * kSnesLinesPerFrame;
-  const uint32_t target_h = g_snes->hIrqEnabled
-                                ? (uint32_t)g_snes->hTimer * 4u
-                                : 0u;
+  const uint32_t target_h =
+      g_snes->hIrqEnabled ? (uint32_t)g_snes->hTimer * 4u : 0u;
   if (target_h >= line_clocks)
     return UINT32_MAX;
 
@@ -420,8 +437,7 @@ static uint32_t clocks_until_timer_irq(void) {
 
   if (g_snes->vTimer >= kSnesLinesPerFrame)
     return UINT32_MAX;
-  const uint32_t current = (uint32_t)g_snes->vPos * line_clocks +
-                           g_snes->hPos;
+  const uint32_t current = (uint32_t)g_snes->vPos * line_clocks + g_snes->hPos;
   uint32_t target = (uint32_t)g_snes->vTimer * line_clocks + target_h;
   if (target < current)
     target += frame_clocks;
@@ -459,8 +475,7 @@ static uint16_t vector16(uint16_t address) {
 
 static void run_interrupt(bool nmi) {
   const bool emu = g_cpu.emulation != 0;
-  uint16_t va = nmi ? (emu ? 0xfffa : 0xffea)
-                    : (emu ? 0xfffe : 0xffee);
+  uint16_t va = nmi ? (emu ? 0xfffa : 0xffea) : (emu ? 0xfffe : 0xffee);
   uint16_t target = vector16(va);
   cpu_push_interrupt_frame(&g_cpu);
   if (!interp_bridge_run_interrupt(&g_cpu, target))
@@ -484,7 +499,8 @@ static bool run_main_until_boundary(void) {
   }
   {
     uint32_t next = interp_bridge_lle_resume_pc();
-    if (next) s_resume_pc = next;
+    if (next)
+      s_resume_pc = next;
   }
   return true;
 }
@@ -572,15 +588,17 @@ void StarFoxDrawPpuFrame(void) {
   PpuSetMode2LayerCapture(g_ppu, -1);
   PpuSetWidescreenLineEnhancer(g_ppu, NULL, NULL);
   dma_startDma(g_dma, g_snesrecomp_last_hdmaen, true);
-  for (int ch = 0; ch < 8; ch++) SimpleHdma_Init(&hdma[ch], &g_dma->channel[ch]);
+  for (int ch = 0; ch < 8; ch++)
+    SimpleHdma_Init(&hdma[ch], &g_dma->channel[ch]);
 
   for (int line = 0; line <= 224; line++) {
-    for (int ch = 0; ch < 8; ch++) SimpleHdma_DoLine(&hdma[ch]);
+    for (int ch = 0; ch < 8; ch++)
+      SimpleHdma_DoLine(&hdma[ch]);
     ppu_runLine(g_ppu, line);
   }
 
   if (restore_crosshair_palette) {
-    memcpy(&g_ppu->cgram[kCrosshairObjPaletteFirst],
-           saved_crosshair_palette, sizeof(saved_crosshair_palette));
+    memcpy(&g_ppu->cgram[kCrosshairObjPaletteFirst], saved_crosshair_palette,
+           sizeof(saved_crosshair_palette));
   }
 }
