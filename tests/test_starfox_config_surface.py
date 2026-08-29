@@ -183,6 +183,7 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
         self.assertIn("kSourceVanishDefaultY = 96", renderer_c)
         self.assertIn("kRomDepthThresholdDefault = 0x8faa", renderer_c)
         self.assertIn("kShapeNull = 0xaca1", renderer_c)
+        self.assertIn("!object->shape || object->shape == kShapeNull", renderer_c)
         self.assertIn("kPfmShadows = 0x08", renderer_c)
         self.assertIn("kShadowForcedColour = 0x09", renderer_c)
         self.assertIn("kNativeWorldMinActiveObjects = 8", renderer_c)

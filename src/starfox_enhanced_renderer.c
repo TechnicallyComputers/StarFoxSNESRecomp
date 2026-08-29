@@ -613,6 +613,9 @@ static bool classify_and_sort_source_object(NativeSourceFrameSnapshot *snapshot,
     snapshot->unsupported_text++;
     return false;
   }
+  if (!object->shape || object->shape == kShapeNull) {
+    return false;
+  }
   if (!read_shape_metadata(cart, object->shape, &sort_z, &z_max)) {
     snapshot->unsupported_invalid++;
     return false;
