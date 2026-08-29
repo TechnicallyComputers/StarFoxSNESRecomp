@@ -35,6 +35,11 @@ two successfully drawn native shapes, 4096 visible native pixels, and no source
 text objects. It does not require a minimum source draw-list count because
 runtime logs showed valid high-coverage native scenes failing solely on that
 pre-render count.
+Once a strong frame enters native replacement, scene-scoped hysteresis keeps
+the native compositor active while at least six source objects remain and no
+source text objects appear. This prevents ordinary low-coverage camera moments
+from alternating between the wide native scene and centered stock output; UI
+or scene transitions still reset the replacement state.
 Otherwise BG1 and the centered stock fallback remain available. This keeps the
 rule conservative for title, map, briefing, and UI frames until their source
 state is separately proven, and it must not re-enable Star Fox PPU/SuperFX

@@ -170,9 +170,12 @@ static NativeSourceFrameSnapshot g_source_snapshot;
 
 enum {
   kNativeWorldMinActiveObjects = 8,
+  kNativeWorldHoldMinActiveObjects = 6,
   kNativeWorldMinDrawnShapes = 2,
   kNativeWorldMinVisiblePixels = 4096,
 };
+
+static bool g_native_world_replacement_active;
 
 void StarFoxDrawPpuFrame(void);
 
@@ -756,6 +759,22 @@ static bool native_world_replacement_ready(const NativeRendererStats *stats) {
          stats->filled_pixels >= kNativeWorldMinVisiblePixels;
 }
 
+static bool source_snapshot_can_hold_native_world(void) {
+  if (!source_snapshot_current())
+    return false;
+  if (g_source_snapshot.active_count < kNativeWorldHoldMinActiveObjects)
+    return false;
+  return g_source_snapshot.unsupported_text == 0;
+}
+
+static bool update_native_world_replacement(bool raw_ready) {
+  if (!source_snapshot_can_hold_native_world())
+    g_native_world_replacement_active = false;
+  else if (raw_ready)
+    g_native_world_replacement_active = true;
+  return g_native_world_replacement_active;
+}
+
 static void log_native_world_gate_transition(const NativeRendererStats *stats,
                                              int raw_ready, int suppress,
                                              int native_ppu_done) {
@@ -1143,10 +1162,13 @@ StarFoxEnhancedRenderFrame(RtlEnhancedRendererFrame *frame) {
                                           frame->width, frame->height,
                                           frame->widescreen_extra, &stats);
       native_world_ready = native_world_replacement_ready(&stats);
-      suppress_superfx_world_bg1 = native_world_ready;
+      suppress_superfx_world_bg1 =
+          update_native_world_replacement(native_world_ready);
       stats.native_world_ready = native_world_ready ? 1u : 0u;
       stats.native_world_suppressed = suppress_superfx_world_bg1 ? 1u : 0u;
     }
+  } else {
+    g_native_world_replacement_active = false;
   }
 
   clear_frame(frame->pixels, frame->pitch, frame->width, frame->height);
