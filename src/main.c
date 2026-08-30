@@ -530,6 +530,8 @@ static void DrawPpuFrameWithPerf(void) {
   g_renderer_funcs.BeginDraw(g_snes_width * render_scale,
                              g_snes_height * render_scale,
                              &pixel_buffer, &pitch);
+  if (!pixel_buffer || pitch <= 0)
+    return;
   RtlDrawPpuFrame(pixel_buffer, pitch, g_ppu_render_flags);
   if (g_display_perf)
     RenderNumber(pixel_buffer + pitch * render_scale, pitch, g_curr_fps, render_scale == 4);
@@ -673,6 +675,7 @@ static void SDLCALL AudioCallback(void *userdata, Uint8 *stream, int len) {
 static SDL_Renderer *g_renderer;
 static SDL_Texture *g_texture;
 static SDL_Rect g_sdl_renderer_rect;
+static bool g_sdl_texture_locked;
 
 static bool SdlRenderer_Init(SDL_Window *window) {
   if (g_config.shader)
@@ -718,24 +721,34 @@ static void SdlRenderer_Destroy(void) {
 }
 
 static void SdlRenderer_GetOutputSize(int *width, int *height) {
-  if (SDL_GetRendererOutputSize(g_renderer, width, height) != 0) {
+  if (!snesrecomp_sdl_get_render_output_size(g_renderer, width, height)) {
     *width = 0;
     *height = 0;
   }
 }
 
 static void SdlRenderer_BeginDraw(int width, int height, uint8 **pixels, int *pitch) {
+  if (pixels)
+    *pixels = NULL;
+  if (pitch)
+    *pitch = 0;
+  g_sdl_texture_locked = false;
   g_sdl_renderer_rect.w = width;
   g_sdl_renderer_rect.h = height;
-  if (SDL_LockTexture(g_texture, &g_sdl_renderer_rect, (void **)pixels, pitch) != 0) {
+  if (!snesrecomp_sdl_lock_texture(g_texture, &g_sdl_renderer_rect,
+                                   (void **)pixels, pitch)) {
     printf("Failed to lock texture: %s\n", SDL_GetError());
     return;
   }
+  g_sdl_texture_locked = true;
 }
 
 static void SdlRenderer_EndDraw(void) {
+  if (!g_sdl_texture_locked)
+    return;
   //  uint64 before = SDL_GetPerformanceCounter();
   SDL_UnlockTexture(g_texture);
+  g_sdl_texture_locked = false;
   //  uint64 after = SDL_GetPerformanceCounter();
   //  float v = (double)(after - before) / SDL_GetPerformanceFrequency();
   //  printf("%f ms\n", v * 1000);
