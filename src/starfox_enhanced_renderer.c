@@ -176,11 +176,16 @@ typedef struct NativeRendererStats {
 } NativeRendererStats;
 
 static NativeSourceFrameSnapshot g_source_snapshot;
+static NativeSourceFrameSnapshot g_previous_source_snapshot;
 static NativeRendererStats g_last_renderer_stats;
 static int g_last_render_width;
 static int g_last_render_height;
 static uint16_t g_last_render_widescreen_extra;
 static uint64_t g_last_semantic_hash;
+static int g_source_logic_change_frame;
+static int g_source_logic_period_frames = 4;
+static uint16_t g_last_pose_alpha_q8;
+static uint8_t g_source_interpolation_valid;
 
 static int starfox_enhanced_debug_command(const char *cmd, const char *args,
                                           DebugServerGameSendLine send_line);
@@ -310,6 +315,29 @@ static int abs_i16_delta(int16_t left, int16_t right) {
   return delta < 0 ? -delta : delta;
 }
 
+static int32_t rounded_q8_delta(int32_t delta, uint16_t alpha_q8) {
+  const int64_t scaled = (int64_t)delta * (int64_t)alpha_q8;
+  if (scaled >= 0)
+    return (int32_t)((scaled + 128) / 256);
+  return (int32_t)-(((-scaled) + 128) / 256);
+}
+
+static int16_t interpolate_i16_q8(int16_t from, int16_t to, uint16_t alpha_q8) {
+  const int32_t delta = (int32_t)subtract16(to, from);
+  return wrap16_i64((int32_t)from + rounded_q8_delta(delta, alpha_q8));
+}
+
+static uint16_t interpolate_angle_q8(uint16_t from, uint16_t to,
+                                     uint16_t alpha_q8) {
+  int32_t delta = (int32_t)to - (int32_t)from;
+  if (delta > 32767)
+    delta -= 65536;
+  else if (delta < -32768)
+    delta += 65536;
+  return (uint16_t)wrap16_i64((int32_t)from +
+                              rounded_q8_delta(delta, alpha_q8));
+}
+
 static NativeSourceObject *
 source_snapshot_object_by_handle(NativeSourceFrameSnapshot *snapshot,
                                  uint8_t handle) {
@@ -354,6 +382,70 @@ static int16_t source_object_camera_z_for_view(
   const int16_t relative_z = subtract16(object->world_z, snapshot->view_z);
   return transform_q15_component(snapshot->view_matrix, relative_x, relative_y,
                                  relative_z, 2);
+}
+
+static int source_view_is_discontinuous(const NativeSourceFrameSnapshot *left,
+                                        const NativeSourceFrameSnapshot *right) {
+  const int maximum_continuous_step = 4096;
+  if (!left || !right)
+    return 1;
+  return abs_i16_delta(left->view_x, right->view_x) > maximum_continuous_step ||
+         abs_i16_delta(left->view_y, right->view_y) > maximum_continuous_step ||
+         abs_i16_delta(left->view_z, right->view_z) > maximum_continuous_step;
+}
+
+static void update_source_interpolation_state(
+    const NativeSourceFrameSnapshot *snapshot,
+    const NativeSourceFrameSnapshot *previous_display_snapshot) {
+  const int minimum_period = 1;
+  const int maximum_period = 12;
+
+  if (!snapshot || !snapshot->valid) {
+    memset(&g_previous_source_snapshot, 0, sizeof(g_previous_source_snapshot));
+    g_source_interpolation_valid = 0;
+    g_source_logic_change_frame = 0;
+    g_source_logic_period_frames = 4;
+    return;
+  }
+
+  if (!previous_display_snapshot || !previous_display_snapshot->valid) {
+    g_previous_source_snapshot = *snapshot;
+    g_source_interpolation_valid = 0;
+    g_source_logic_change_frame = snapshot->frame;
+    return;
+  }
+
+  if (snapshot->game_frame == previous_display_snapshot->game_frame)
+    return;
+
+  if (source_view_is_discontinuous(snapshot, previous_display_snapshot)) {
+    g_previous_source_snapshot = *snapshot;
+    g_source_interpolation_valid = 0;
+    g_source_logic_change_frame = snapshot->frame;
+    return;
+  }
+
+  {
+    const int period = snapshot->frame - g_source_logic_change_frame;
+    if (period >= minimum_period && period <= maximum_period)
+      g_source_logic_period_frames = period;
+  }
+  g_previous_source_snapshot = *previous_display_snapshot;
+  g_source_interpolation_valid = g_previous_source_snapshot.valid ? 1u : 0u;
+  g_source_logic_change_frame = snapshot->frame;
+}
+
+static uint16_t source_interpolation_alpha_q8(void) {
+  extern int snes_frame_counter;
+  int elapsed = snes_frame_counter - g_source_logic_change_frame + 1;
+  if (!g_source_interpolation_valid)
+    return 256;
+  if (elapsed <= 0)
+    return 0;
+  if (elapsed >= g_source_logic_period_frames)
+    return 256;
+  return (uint16_t)((elapsed * 256 + g_source_logic_period_frames / 2) /
+                    g_source_logic_period_frames);
 }
 
 static bool object_pointer_index(uint16_t pointer, unsigned *index) {
@@ -916,8 +1008,11 @@ void StarFoxEnhancedLatchSourceFrame(void) {
   stabilize_source_view(&snapshot, &g_source_snapshot);
   classify_source_snapshot_objects(&snapshot, cart);
   snapshot.valid = snapshot.active_count != 0;
+  update_source_interpolation_state(&snapshot, &g_source_snapshot);
 
 done:
+  if (!snapshot.valid)
+    update_source_interpolation_state(&snapshot, &g_source_snapshot);
   g_source_snapshot = snapshot;
   g_last_semantic_hash = source_snapshot_hash(&g_source_snapshot);
 }
@@ -1012,14 +1107,53 @@ static void fill_native_shape_pose(StarFoxEnhancedNativeShapePose *pose,
                                    uint16_t ws_extra, int shadow) {
   const int true_colour_shadow =
       (object->sflags[0] & kAsfShadowShape) != 0;
+  uint16_t alpha_q8 = source_interpolation_alpha_q8();
+  const NativeSourceObject *previous_object = NULL;
+  int16_t view_x = g_source_snapshot.view_x;
+  int16_t view_y = g_source_snapshot.view_y;
+  int16_t view_z = g_source_snapshot.view_z;
+  int16_t world_x = object->world_x;
+  int16_t world_y = object->world_y;
+  int16_t world_z = object->world_z;
+
+  if (g_source_interpolation_valid && alpha_q8 < 256) {
+    previous_object = source_snapshot_const_object_by_handle(
+        &g_previous_source_snapshot, object->handle);
+  }
+  if (!previous_object)
+    alpha_q8 = 256;
+  if (alpha_q8 < 256) {
+    view_x = interpolate_i16_q8(g_previous_source_snapshot.view_x,
+                                g_source_snapshot.view_x, alpha_q8);
+    view_y = interpolate_i16_q8(g_previous_source_snapshot.view_y,
+                                g_source_snapshot.view_y, alpha_q8);
+    view_z = interpolate_i16_q8(g_previous_source_snapshot.view_z,
+                                g_source_snapshot.view_z, alpha_q8);
+    world_x = interpolate_i16_q8(previous_object->world_x, object->world_x,
+                                 alpha_q8);
+    world_y = interpolate_i16_q8(previous_object->world_y, object->world_y,
+                                 alpha_q8);
+    world_z = interpolate_i16_q8(previous_object->world_z, object->world_z,
+                                 alpha_q8);
+  }
+  g_last_pose_alpha_q8 = alpha_q8;
+
   memset(pose, 0, sizeof(*pose));
   if (shadow && !true_colour_shadow) {
-    const int16_t relative_x =
-        subtract16(object->world_x, g_source_snapshot.view_x);
-    const int16_t relative_y =
-        subtract16(g_source_snapshot.shadow_height, g_source_snapshot.view_y);
-    const int16_t relative_z =
-        subtract16(object->world_z, g_source_snapshot.view_z);
+    const int16_t relative_x = subtract16(world_x, view_x);
+    const int16_t relative_y = subtract16(g_source_snapshot.shadow_height,
+                                          view_y);
+    const int16_t relative_z = subtract16(world_z, view_z);
+    pose->x = transform_q15_component(g_source_snapshot.view_matrix,
+                                      relative_x, relative_y, relative_z, 0);
+    pose->y = transform_q15_component(g_source_snapshot.view_matrix,
+                                      relative_x, relative_y, relative_z, 1);
+    pose->z = transform_q15_component(g_source_snapshot.view_matrix,
+                                      relative_x, relative_y, relative_z, 2);
+  } else if (alpha_q8 < 256) {
+    const int16_t relative_x = subtract16(world_x, view_x);
+    const int16_t relative_y = subtract16(world_y, view_y);
+    const int16_t relative_z = subtract16(world_z, view_z);
     pose->x = transform_q15_component(g_source_snapshot.view_matrix,
                                       relative_x, relative_y, relative_z, 0);
     pose->y = transform_q15_component(g_source_snapshot.view_matrix,
@@ -1031,17 +1165,31 @@ static void fill_native_shape_pose(StarFoxEnhancedNativeShapePose *pose,
     pose->y = object->camera_y;
     pose->z = object->camera_z;
   }
-  pose->pitch = (uint16_t)object->pitch << 8;
-  pose->yaw = (uint16_t)object->yaw << 8;
-  pose->roll = (uint16_t)object->roll << 8;
+  pose->pitch =
+      alpha_q8 < 256
+          ? interpolate_angle_q8((uint16_t)previous_object->pitch << 8,
+                                 (uint16_t)object->pitch << 8, alpha_q8)
+          : (uint16_t)object->pitch << 8;
+  pose->yaw =
+      alpha_q8 < 256
+          ? interpolate_angle_q8((uint16_t)previous_object->yaw << 8,
+                                 (uint16_t)object->yaw << 8, alpha_q8)
+          : (uint16_t)object->yaw << 8;
+  pose->roll =
+      alpha_q8 < 256
+          ? interpolate_angle_q8((uint16_t)previous_object->roll << 8,
+                                 (uint16_t)object->roll << 8, alpha_q8)
+          : (uint16_t)object->roll << 8;
   pose->vanish_x = g_source_snapshot.vanish_x;
   pose->vanish_y = g_source_snapshot.vanish_y;
   pose->colour_pointer = object->colour_pointer;
   pose->depth_colours = g_source_snapshot.depth_colours;
   pose->depth_thresholds = g_source_snapshot.depth_thresholds;
+  pose->source_depth_z = object->camera_z;
   pose->object_depth_offset = object->object_depth_offset;
   pose->explosion_progress = object->explosion_count;
   pose->use_source_view_matrix = 1;
+  pose->use_source_depth_z = 1;
   pose->texture_scroll_x = object->texture_scroll_x;
   pose->texture_scroll_y = object->texture_scroll_y;
   if ((object->sflags[0] & kAsfScaledSprite) != 0) {
@@ -1235,7 +1383,8 @@ static void debug_send_pose(DebugServerGameSendLine send_line,
   debug_sendf(send_line,
               "pose handle=%u shape=%x lod=%x colour=%x world=%d,%d,%d "
               "camera=%d,%d,%d rot=%u,%u,%u type=%x sflags=%x,%x,%x,%x "
-              "shadow=%d particle=%d text=%d scaled=%d vertices=%u faces=%u",
+              "shadow=%d particle=%d text=%d scaled=%d alpha_q8=%u "
+              "vertices=%u faces=%u",
               handle, (unsigned)object->shape, (unsigned)stats.selected_lod,
               (unsigned)pose.colour_pointer, (int)object->world_x,
               (int)object->world_y, (int)object->world_z, (int)pose.x,
@@ -1246,7 +1395,8 @@ static void debug_send_pose(DebugServerGameSendLine send_line,
               (!shadow && (object->sflags[0] & kAsfPartObj) != 0) ? 1 : 0,
               (!shadow && (object->sflags[0] & kAsfTextObj) != 0) ? 1 : 0,
               (!shadow && (object->sflags[0] & kAsfScaledSprite) != 0) ? 1 : 0,
-              stats.decoded_vertices, stats.decoded_faces);
+              (unsigned)g_last_pose_alpha_q8, stats.decoded_vertices,
+              stats.decoded_faces);
 }
 
 static void debug_send_poses(DebugServerGameSendLine send_line) {
@@ -1295,12 +1445,17 @@ static void debug_send_source_view(DebugServerGameSendLine send_line) {
   debug_sendf(send_line,
               "source frame=%d logic=%u valid=%u view=%d,%d,%d "
               "raw_view_z=%d stabilized=%u "
+              "interp_valid=%u interp_alpha_q8=%u interp_period=%d "
+              "interp_origin=%d "
               "wmat=%d,%d,%d,%d,%d,%d,%d,%d,%d vanish=%d,%d "
               "shadow_height=%d fly_mode=%02x",
               snapshot.frame, (unsigned)snapshot.game_frame,
               (unsigned)snapshot.valid, (int)snapshot.view_x,
               (int)snapshot.view_y, (int)snapshot.view_z,
               (int)snapshot.raw_view_z, (unsigned)snapshot.view_stabilized,
+              (unsigned)g_source_interpolation_valid,
+              (unsigned)source_interpolation_alpha_q8(),
+              g_source_logic_period_frames, g_source_logic_change_frame,
               (int)snapshot.view_matrix[0], (int)snapshot.view_matrix[1],
               (int)snapshot.view_matrix[2], (int)snapshot.view_matrix[3],
               (int)snapshot.view_matrix[4], (int)snapshot.view_matrix[5],

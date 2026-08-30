@@ -469,8 +469,10 @@ StarFoxEnhancedDrawNativeShape(uint8_t *pixels, size_t pitch, int width,
   try {
     auto &assets = shape_assets_for_rom(rom, rom_size);
     starfox::assets::ShapeHeader base_header;
+    const auto source_depth =
+        pose->use_source_depth_z ? pose->source_depth_z : pose->z;
     const auto *shape = cached_shape(
-        assets, shape_address, pose->colour_pointer, pose->z,
+        assets, shape_address, pose->colour_pointer, source_depth,
         pose->use_shadow_shape != 0, &base_header);
     if (!shape)
       return 0;

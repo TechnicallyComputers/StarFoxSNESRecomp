@@ -20,9 +20,11 @@ typedef struct StarFoxEnhancedNativeShapePose {
   uint16_t colour_pointer;
   uint16_t depth_colours;
   uint16_t depth_thresholds;
+  int32_t source_depth_z;
   uint8_t object_depth_offset;
   uint8_t explosion_progress;
   uint8_t use_source_view_matrix;
+  uint8_t use_source_depth_z;
   uint8_t use_shadow_shape;
   uint8_t flatten_shadow_matrix;
   uint8_t force_colour;
