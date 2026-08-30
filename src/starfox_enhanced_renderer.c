@@ -108,6 +108,8 @@ typedef struct NativeSourceObject {
   uint8_t animation_frame;
   uint8_t colour_frame;
   uint8_t object_depth_offset;
+  uint8_t metadata_valid;
+  uint8_t culled;
   uint8_t explosion_count;
   uint8_t sound1;
   uint8_t sound2;
@@ -588,6 +590,7 @@ static void log_renderer_stats(const NativeRendererStats *stats,
 
 static bool source_object_has_drawable_shape(const NativeSourceObject *object) {
   return object && object->shape != 0 && object->shape != kShapeNull &&
+         object->metadata_valid && !object->culled &&
          (object->sflags[0] & (kAsfPartObj | kAsfTextObj)) == 0 &&
          (object->sflags[3] & kAsfInvisible4) == 0;
 }
@@ -639,7 +642,7 @@ static void latch_source_object(NativeSourceFrameSnapshot *snapshot,
   NativeSourceObject object;
   (void)slot;
   memset(&object, 0, sizeof(object));
-  object.handle = (uint8_t)slot;
+  object.handle = (uint8_t)(slot + 1u);
   object.pointer = pointer;
   object.shape = ram_word(pointer + kObjShape);
   object.flags = ram_byte(pointer + kObjFlags);
@@ -680,6 +683,24 @@ static bool classify_and_sort_source_object(NativeSourceFrameSnapshot *snapshot,
     snapshot->unsupported_invisible++;
     return false;
   }
+
+  object->camera_x = transform_q15_component(snapshot->view_matrix, relative_x,
+                                             relative_y, relative_z, 0);
+  object->camera_y = transform_q15_component(snapshot->view_matrix, relative_x,
+                                             relative_y, relative_z, 1);
+  object->camera_z = transform_q15_component(snapshot->view_matrix, relative_x,
+                                             relative_y, relative_z, 2);
+  if (object->shape != 0 && object->shape != kShapeNull) {
+    object->metadata_valid =
+        read_shape_metadata(cart, object->shape, &sort_z, &z_max) ? 1u : 0u;
+    if (!object->metadata_valid)
+      snapshot->unsupported_invalid++;
+  }
+  object->sort_depth = add16(object->camera_z, sort_z);
+  if ((object->type & kAtGround) != 0)
+    object->sort_depth = add16(object->sort_depth, 15000);
+  source_snapshot_insert_drawable(snapshot, (uint8_t)object_index);
+
   if ((object->sflags[0] & kAsfPartObj) != 0) {
     snapshot->unsupported_particle++;
     return false;
@@ -688,30 +709,17 @@ static bool classify_and_sort_source_object(NativeSourceFrameSnapshot *snapshot,
     snapshot->unsupported_text++;
     return false;
   }
-  if (!object->shape || object->shape == kShapeNull) {
+  if (!object->shape || object->shape == kShapeNull)
     return false;
-  }
-  if (!read_shape_metadata(cart, object->shape, &sort_z, &z_max)) {
-    snapshot->unsupported_invalid++;
+  if (!object->metadata_valid)
     return false;
-  }
-
-  object->camera_x = transform_q15_component(snapshot->view_matrix, relative_x,
-                                             relative_y, relative_z, 0);
-  object->camera_y = transform_q15_component(snapshot->view_matrix, relative_x,
-                                             relative_y, relative_z, 1);
-  object->camera_z = transform_q15_component(snapshot->view_matrix, relative_x,
-                                             relative_y, relative_z, 2);
-  object->sort_depth = add16(object->camera_z, sort_z);
-  if ((object->type & kAtGround) != 0)
-    object->sort_depth = add16(object->sort_depth, 15000);
   if (add16(object->camera_z, z_max) < 0) {
+    object->culled = 1;
     snapshot->unsupported_culled++;
     return false;
   }
 
   object->colour_pointer = effective_colour_pointer(object);
-  source_snapshot_insert_drawable(snapshot, (uint8_t)object_index);
   return true;
 }
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import socket
 import sys
+import time
 from pathlib import Path
 
 
@@ -74,6 +75,42 @@ def kv(line: str) -> dict[str, str]:
             key, value = word.split("=", 1)
             result[key] = value
     return result
+
+
+def require_complete_step(side: Side, frames: int) -> str:
+    reply = side.cmd(f"step {frames}", semantic=False)
+    if '"timeout":true' in reply:
+        raise RuntimeError(f"{side.name}: step {frames} timed out: {reply}")
+    return reply
+
+
+def debug_frame_number(reply: str) -> int:
+    marker = '"frame":'
+    if marker not in reply:
+        raise RuntimeError(f"frame reply missing frame: {reply}")
+    tail = reply.split(marker, 1)[1]
+    number = tail.split(",", 1)[0].split("}", 1)[0]
+    return int(number)
+
+
+def run_debug_side_to_frame(
+    side: Side, target: int, *, timeout_seconds: float = 300.0
+) -> str:
+    reply = side.cmd(f"run_to_frame {target}", semantic=False)
+    if '"error"' in reply:
+        raise RuntimeError(f"{side.name}: run_to_frame failed: {reply}")
+    deadline = time.monotonic() + timeout_seconds
+    last_frame = -1
+    last_reply = reply
+    while time.monotonic() < deadline:
+        time.sleep(1.0)
+        last_reply = side.cmd("frame", semantic=False)
+        last_frame = debug_frame_number(last_reply)
+        if last_frame >= target:
+            return last_reply
+    raise RuntimeError(
+        f"{side.name}: frame {target} not reached; last={last_frame} reply={last_reply}"
+    )
 
 
 def host_path(path: Path) -> str:
@@ -152,6 +189,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--steps", type=int, default=0)
     parser.add_argument("--stride", type=int, default=1)
+    parser.add_argument(
+        "--a-run-to-frame",
+        type=int,
+        default=0,
+        help="Use side A's debug-server run_to_frame command before dumping.",
+    )
+    parser.add_argument(
+        "--run-timeout",
+        type=float,
+        default=300.0,
+        help="Seconds to wait for --a-run-to-frame.",
+    )
     parser.add_argument("--out-dir", type=Path, default=Path("_oracle_compare"))
     parser.add_argument("--dump-prefix", default="oracle")
     parser.add_argument(
@@ -179,8 +228,13 @@ def main(argv: list[str] | None = None) -> int:
         if a.hello:
             print(f"A hello: {a.hello}")
         if b is None:
+            if args.a_run_to_frame:
+                print(
+                    f"A run_to_frame: "
+                    f"{run_debug_side_to_frame(a, args.a_run_to_frame, timeout_seconds=args.run_timeout)}"
+                )
             if args.steps:
-                print(f"A step: {a.cmd(f'step {args.steps}', semantic=False)}")
+                print(f"A step: {require_complete_step(a, args.steps)}")
             write_snapshot(
                 a,
                 args.out_dir,
@@ -194,8 +248,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"B hello: {b.hello}")
         for checkpoint in range(args.steps + 1):
             if checkpoint:
-                a.cmd(f"step {args.stride}", semantic=False)
-                b.cmd(f"step {args.stride}", semantic=False)
+                require_complete_step(a, args.stride)
+                require_complete_step(b, args.stride)
                 a_status = a.cmd("status")
                 b_status = b.cmd("status")
             else:

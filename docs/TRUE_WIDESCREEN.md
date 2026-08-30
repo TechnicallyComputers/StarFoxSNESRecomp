@@ -149,6 +149,6 @@ $env:SNESRECOMP_DEBUG_PORT = '4582'
 
 py tools\starfox_enhanced_oracle_compare.py `
   --a-port 4582 --a-prefix "game " --a-no-hello `
-  --dump-only --steps 1 --no-screenshot `
+  --dump-only --a-run-to-frame 8000 --no-screenshot `
   --out-dir _codex_validation\semantic_smoke
 ```
