@@ -1054,7 +1054,7 @@ int main(int argc, char** argv) {
       game_info.has_expected_crc = 1;
       game_info.known_sha256 = (const uint8_t (*)[32])&kStarFoxSha256;
       game_info.num_known_sha256 = 1;
-      game_info.widescreen_supported = 1;  /* Launcher exposes fixed 16:9; ultrawide remains config-only. */
+      game_info.widescreen_supported = 0;  /* Enhanced widescreen is owned by the built-in Mods provider. */
       game_info.msu1_supported = 0;
       game_info.sram_path = NULL;    /* Star Fox cart has no battery SRAM — hide SAVES */
       game_info.num_players = 1;     /* single-player — hide the Player 2 row */

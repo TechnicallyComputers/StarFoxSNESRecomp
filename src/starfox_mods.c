@@ -21,8 +21,7 @@ typedef struct StarFoxModFeatureInfo {
 } StarFoxModFeatureInfo;
 
 enum {
-  kStarFoxModFeature_DisplayMode,
-  kStarFoxModFeature_EnhancedRenderer,
+  kStarFoxModFeature_EnhancedWidescreen,
   kStarFoxModFeature_CrosshairColor,
   kStarFoxModFeature_GodMode,
   kStarFoxModFeature_GodNuke,
@@ -41,14 +40,9 @@ static const char kStarFoxModsSourceUrl[] =
 
 static const StarFoxModFeatureInfo kStarFoxModFeatures[] = {
   {
-    "display_mode", "Display Mode", "Display",
+    "enhanced_widescreen", "Enhanced Widescreen", "Display",
     "Adapted from DisplayMode in starfox-enhanced; selects the separate "
-    "native renderer output width."
-  },
-  {
-    "enhanced_renderer", "Enhanced Renderer", "Display",
-    "Enable the separate native Star Fox renderer path adapted from "
-    "starfox-enhanced."
+    "native renderer output width. Disabling this returns to Authentic 4:3."
   },
   {
     "crosshair_color", "Crosshair Color", "Gameplay",
@@ -78,7 +72,6 @@ typedef struct StarFoxChoice {
 } StarFoxChoice;
 
 static const StarFoxChoice kDisplayModeChoices[] = {
-  { "off", "Original 4:3" },
   { "16:10", "Widescreen 16:10" },
   { "16:9", "Widescreen 16:9" },
   { "21:9", "Ultrawide 21:9" },
@@ -126,12 +119,12 @@ static int feature_index(const char *feature_id) {
 
 static const char *display_mode_value(void) {
   switch (g_config.widescreen_extra) {
-  case 0: return "off";
   case 52: return "16:10";
   case 71: return "16:9";
   case 132: return "21:9";
   case 272: return "32:9";
-  default: return "custom";
+  case 0:
+  default: return "16:9";
   }
 }
 
@@ -234,9 +227,8 @@ static int unsupported2(void *ctx, const char *a, const char *b) {
 
 static bool feature_enabled(int index) {
   switch (index) {
-  case kStarFoxModFeature_DisplayMode: return g_config.widescreen_extra != 0;
-  case kStarFoxModFeature_EnhancedRenderer:
-    return g_config.enhanced_renderer;
+  case kStarFoxModFeature_EnhancedWidescreen:
+    return g_config.enhanced_renderer && g_config.widescreen_extra != 0;
   case kStarFoxModFeature_CrosshairColor:
     return g_config.crosshair_color != kCrosshairColor_Original;
   case kStarFoxModFeature_GodMode: return g_config.god_mode;
@@ -250,7 +242,7 @@ static bool feature_enabled(int index) {
 
 static int feature_option_count(int index) {
   switch (index) {
-  case kStarFoxModFeature_DisplayMode:
+  case kStarFoxModFeature_EnhancedWidescreen:
   case kStarFoxModFeature_CrosshairColor:
   case kStarFoxModFeature_PresentationFps:
     return 1;
@@ -266,12 +258,8 @@ static int feature_enable(void *ctx, const char *package_id,
   StarFoxLauncherModsContext *mod_ctx = (StarFoxLauncherModsContext *)ctx;
   if (mod_ctx) mod_ctx->error[0] = 0;
   switch (feature_index(feature_id)) {
-  case kStarFoxModFeature_DisplayMode:
+  case kStarFoxModFeature_EnhancedWidescreen:
     g_config.widescreen_extra = enabled ? 71 : 0;
-    if (enabled)
-      g_config.enhanced_renderer = true;
-    break;
-  case kStarFoxModFeature_EnhancedRenderer:
     g_config.enhanced_renderer = enabled != 0;
     break;
   case kStarFoxModFeature_CrosshairColor:
@@ -368,13 +356,13 @@ static int feature_option_get(void *ctx, const char *package_id,
   out->type = RECOMP_MOD_OPTION_CHOICE;
   out->step = 1;
   switch (fi) {
-  case kStarFoxModFeature_DisplayMode:
+  case kStarFoxModFeature_EnhancedWidescreen:
     mod_copy(out->id, sizeof(out->id), "mode");
-    mod_copy(out->label, sizeof(out->label), "Display mode");
+    mod_copy(out->label, sizeof(out->label), "Aspect ratio");
     mod_copy(out->description, sizeof(out->description),
              "Enhanced-style viewport width.");
     mod_copy(out->value, sizeof(out->value), display_mode_value());
-    mod_copy(out->default_value, sizeof(out->default_value), "off");
+    mod_copy(out->default_value, sizeof(out->default_value), "16:9");
     out->choice_count = (int)countof(kDisplayModeChoices);
     return 1;
   case kStarFoxModFeature_CrosshairColor:
@@ -411,7 +399,7 @@ static int feature_choice_get(void *ctx, const char *package_id,
   const int fi = feature_index(feature_id);
   const StarFoxChoice *choices = NULL;
   int n = 0;
-  if (fi == kStarFoxModFeature_DisplayMode &&
+  if (fi == kStarFoxModFeature_EnhancedWidescreen &&
       StringEqualsNoCase(option_id, "mode")) {
     choices = kDisplayModeChoices;
     n = (int)countof(kDisplayModeChoices);
@@ -442,11 +430,9 @@ static int feature_set_option(void *ctx, const char *package_id,
   StarFoxLauncherModsContext *mod_ctx = (StarFoxLauncherModsContext *)ctx;
   if (mod_ctx) mod_ctx->error[0] = 0;
   const int fi = feature_index(feature_id);
-  if (fi == kStarFoxModFeature_DisplayMode &&
+  if (fi == kStarFoxModFeature_EnhancedWidescreen &&
       StringEqualsNoCase(option_id, "mode")) {
-    if (StringEqualsNoCase(value, "off") || StringEqualsNoCase(value, "4:3"))
-      g_config.widescreen_extra = 0;
-    else if (StringEqualsNoCase(value, "16:10")) {
+    if (StringEqualsNoCase(value, "16:10")) {
       g_config.widescreen_extra = 52;
       g_config.enhanced_renderer = true;
     } else if (StringEqualsNoCase(value, "16:9")) {

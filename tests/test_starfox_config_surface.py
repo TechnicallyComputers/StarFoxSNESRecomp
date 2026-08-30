@@ -62,7 +62,7 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
         self.assertIn("g_config.presentation_fps > 60 ? 0 : 1", (ROOT / "src" / "opengl.c").read_text(encoding="utf-8"))
         self.assertIn("g_config.presentation_fps <= 60", main_c)
 
-    def test_launcher_exposes_supported_widescreen(self):
+    def test_launcher_exposes_enhanced_widescreen_mod(self):
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         main_c = (ROOT / "src" / "main.c").read_text(encoding="utf-8")
         mods_c = (ROOT / "src" / "starfox_mods.c").read_text(encoding="utf-8")
@@ -73,11 +73,14 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
         self.assertNotIn("src/starfox_native_shape.c", cmake)
         self.assertIn("StarFoxLauncherModsProvider", main_c)
         self.assertIn("game_info.mods", main_c)
-        self.assertIn("game_info.widescreen_supported = 1", main_c)
+        self.assertIn("game_info.widescreen_supported = 0", main_c)
         self.assertIn("settings.widescreen_hud = 0", main_c)
-        self.assertIn("Display Mode", mods_c)
+        self.assertIn("Enhanced Widescreen", mods_c)
+        self.assertIn('"enhanced_widescreen"', mods_c)
+        self.assertNotIn('"enhanced_renderer"', mods_c)
+        self.assertNotIn('{ "off", "Original 4:3" }', mods_c)
         self.assertNotIn("Widescreen HUD", mods_c)
-        self.assertIn("Enhanced Renderer", mods_c)
+        self.assertNotIn("Enhanced Renderer", mods_c)
         self.assertIn("Crosshair Color", mods_c)
         self.assertIn("God Mode", mods_c)
         self.assertIn("God Nuke", mods_c)
