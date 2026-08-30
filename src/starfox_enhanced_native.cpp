@@ -316,7 +316,9 @@ static void draw_mode_layers(const starfox::simulation::SnesPpuState &ppu,
   const auto high = starfox::render::TilePriorityPass::high;
   const std::int32_t viewport_origin =
       static_cast<std::int32_t>(widescreen_extra);
-  const bool extend_scene = widescreen_extra != 0 && ppu.background_mode == 2u;
+  const bool extend_scene =
+      widescreen_extra != 0 &&
+      (ppu.background_mode == 2u || suppress_superfx_world_bg1);
   const auto bg2_scroll_x = static_cast<std::int16_t>(ram_word(kRamBg2XScroll));
   const auto bg2_scroll_y = static_cast<std::int16_t>(ram_word(kRamBg2Scroll));
 
@@ -346,20 +348,23 @@ static void draw_mode_layers(const starfox::simulation::SnesPpuState &ppu,
                                  extend_scene);
   } else if (ppu.background_mode == 3u) {
     background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y, framebuffer,
-                                 low, viewport_origin, false);
-    sprite_renderer.draw_objects(ppu, framebuffer, 0u, viewport_origin, false);
+                                 low, viewport_origin, extend_scene);
+    sprite_renderer.draw_objects(ppu, framebuffer, 0u, viewport_origin,
+                                 extend_scene);
     // Diagnostic native scene replacement removes only the SuperFX world plane;
     // BG2 and OAM stay in the same order as Enhanced's PPU presenter.
     if (!suppress_superfx_world_bg1)
       background_renderer.draw_bg1(ppu, framebuffer, low, viewport_origin,
-                                   false);
-    sprite_renderer.draw_objects(ppu, framebuffer, 1u, viewport_origin, false);
+                                   extend_scene);
+    sprite_renderer.draw_objects(ppu, framebuffer, 1u, viewport_origin,
+                                 extend_scene);
     background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y, framebuffer,
-                                 high, viewport_origin, false);
-    sprite_renderer.draw_objects(ppu, framebuffer, 2u, viewport_origin, false);
+                                 high, viewport_origin, extend_scene);
+    sprite_renderer.draw_objects(ppu, framebuffer, 2u, viewport_origin,
+                                 extend_scene);
     if (!suppress_superfx_world_bg1)
       background_renderer.draw_bg1(ppu, framebuffer, high, viewport_origin,
-                                   false);
+                                   extend_scene);
   } else {
     background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y, framebuffer,
                                  all, viewport_origin, extend_scene);

@@ -189,6 +189,7 @@ enum {
   kNativeWorldHoldMinActiveObjects = 6,
   kNativeWorldMinDrawnShapes = 2,
   kNativeWorldMinVisiblePixels = 4096,
+  kNativeWorldHoldMinVisiblePixels = 2048,
 };
 
 static bool g_native_world_replacement_active;
@@ -837,16 +838,23 @@ static bool native_world_replacement_ready(const NativeRendererStats *stats) {
          stats->filled_pixels >= kNativeWorldMinVisiblePixels;
 }
 
-static bool source_snapshot_can_hold_native_world(void) {
+static bool source_snapshot_can_hold_native_world(
+    const NativeRendererStats *stats) {
   if (!source_snapshot_current())
     return false;
   if (g_source_snapshot.active_count < kNativeWorldHoldMinActiveObjects)
     return false;
-  return g_source_snapshot.unsupported_text == 0;
+  if (g_source_snapshot.unsupported_text != 0)
+    return false;
+  if (!stats)
+    return false;
+  return stats->drawn >= kNativeWorldMinDrawnShapes &&
+         stats->filled_pixels >= kNativeWorldHoldMinVisiblePixels;
 }
 
-static bool update_native_world_replacement(bool raw_ready) {
-  if (!source_snapshot_can_hold_native_world())
+static bool update_native_world_replacement(bool raw_ready,
+                                            const NativeRendererStats *stats) {
+  if (!source_snapshot_can_hold_native_world(stats))
     g_native_world_replacement_active = false;
   else if (raw_ready)
     g_native_world_replacement_active = true;
@@ -1446,7 +1454,7 @@ StarFoxEnhancedRenderFrame(RtlEnhancedRendererFrame *frame) {
                                           frame->widescreen_extra, &stats);
       native_world_ready = native_world_replacement_ready(&stats);
       suppress_superfx_world_bg1 =
-          update_native_world_replacement(native_world_ready);
+          update_native_world_replacement(native_world_ready, &stats);
       stats.native_world_ready = native_world_ready ? 1u : 0u;
       stats.native_world_suppressed = suppress_superfx_world_bg1 ? 1u : 0u;
     }
@@ -1471,7 +1479,9 @@ StarFoxEnhancedRenderFrame(RtlEnhancedRendererFrame *frame) {
   if (!native_ppu_done && !suppress_superfx_world_bg1)
     copy_stock_center(frame);
   if (shape_overlay_enabled) {
-    if (suppress_superfx_world_bg1) {
+    const bool mode2_native_overlay =
+        g_ppu && PPU_mode(g_ppu) == 2 && drawn != 0;
+    if (suppress_superfx_world_bg1 || mode2_native_overlay) {
       composite_bgra_nonzero(frame->pixels, frame->pitch, native_world,
                              native_world_pitch, frame->width, frame->height);
     }

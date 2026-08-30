@@ -27,13 +27,21 @@ Mode 2 offset-per-tile state is enabled from the live PPU mode rather than the
 transient retail `DOVOFS` calculation request. By post-frame, `DOVOFS` can be
 clear even though BG3 VRAM still contains the active validity-tagged offsets;
 following the PPU mode preserves Corneria's mountains and perspective ground.
+When the native world replacement is active in gameplay/training frames, the
+Enhanced PPU compositor also extends the surviving BG/OAM layers across the
+host scene width instead of clipping them back to the centered cartridge
+viewport. The old stock PPU output remains unextended; this only affects the
+opt-in Enhanced presentation path.
 
 Enhanced native scene replacement renders native shapes and the provisional
 shadow pass into a transparent scratch BGRA buffer before composing PPU layers.
-The compositor
-suppresses the stock Mode 3 BG1 SuperFX world plane only when the current source
-snapshot looks like a gameplay/training world frame and that scratch render
-produced enough visible native pixels to replace the cartridge framebuffer.
+Mode 2 gameplay frames can still composite that native object layer when the
+replacement gate is not suppressing BG1; this matches the reference presenter,
+where the native Super FX layer is distinct from the SNES BG/OAM compositor.
+The compositor suppresses the stock Mode 3 BG1 SuperFX world plane only when the
+current source snapshot looks like a gameplay/training world frame and that
+scratch render produced enough visible native pixels to replace the cartridge
+framebuffer.
 The gate is intentionally output-based: at least eight active source objects,
 two successfully drawn native shapes, 4096 visible native pixels, and no source
 text objects. It does not require a minimum source draw-list count because
@@ -41,9 +49,11 @@ runtime logs showed valid high-coverage native scenes failing solely on that
 pre-render count.
 Once a strong frame enters native replacement, scene-scoped hysteresis keeps
 the native compositor active while at least six source objects remain and no
-source text objects appear. This prevents ordinary low-coverage camera moments
-from alternating between the wide native scene and centered stock output; UI
-or scene transitions still reset the replacement state.
+source text objects appear, but it now also requires at least two native shapes
+and 2048 visible native pixels. This prevents ordinary low-coverage camera
+moments from alternating between the wide native scene and centered stock
+output without hiding the stock Super FX world behind a sparse underdrawn
+native frame; UI or scene transitions still reset the replacement state.
 Otherwise BG1 and the centered stock fallback remain available. This keeps the
 rule conservative for title, map, briefing, and UI frames until their source
 state is separately proven, and it must not re-enable Star Fox PPU/SuperFX
