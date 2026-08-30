@@ -251,6 +251,8 @@ class StarFoxConfigSurfaceTests(unittest.TestCase):
         self.assertIn("source_view_matrix", native_h)
         self.assertIn("source_depth_z", native_h)
         self.assertIn("use_source_depth_z", native_h)
+        self.assertIn("StarFoxEnhancedInterpolateMatrixQ15", native_h)
+        self.assertIn("use_interpolated_object_matrix", native_h)
         self.assertIn("use_shadow_shape", native_h)
         self.assertIn("flatten_shadow_matrix", native_h)
         self.assertIn("force_colour", native_h)

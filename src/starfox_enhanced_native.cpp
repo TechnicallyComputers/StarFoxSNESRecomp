@@ -454,6 +454,37 @@ extern "C" unsigned StarFoxEnhancedDrawCockpitHud(
   }
 }
 
+extern "C" void StarFoxEnhancedInterpolateMatrixQ15(const int16_t previous[9],
+                                                    const int16_t current[9],
+                                                    uint16_t alpha_q8,
+                                                    int16_t out[9]) {
+  if (!out)
+    return;
+  if (!previous || !current || alpha_q8 >= 256u) {
+    if (current)
+      std::memcpy(out, current, sizeof(std::int16_t) * 9u);
+    else
+      std::memset(out, 0, sizeof(std::int16_t) * 9u);
+    return;
+  }
+  if (alpha_q8 == 0u) {
+    std::memcpy(out, previous, sizeof(std::int16_t) * 9u);
+    return;
+  }
+
+  starfox::simulation::MatrixQ15 previous_matrix{};
+  starfox::simulation::MatrixQ15 current_matrix{};
+  for (std::size_t i = 0; i < previous_matrix.size(); i++) {
+    previous_matrix[i] = previous[i];
+    current_matrix[i] = current[i];
+  }
+  const auto interpolated = starfox::simulation::interpolate_rotation_matrix_q15(
+      previous_matrix, current_matrix,
+      static_cast<double>(alpha_q8) / 256.0);
+  for (std::size_t i = 0; i < interpolated.size(); i++)
+    out[i] = interpolated[i];
+}
+
 extern "C" int
 StarFoxEnhancedDrawNativeShape(uint8_t *pixels, size_t pitch, int width,
                                int height, const uint8_t *rom, size_t rom_size,
@@ -524,11 +555,33 @@ StarFoxEnhancedDrawNativeShape(uint8_t *pixels, size_t pitch, int width,
       render_pose.simple_sprite_world_size = diameter != 0 ? diameter : 1;
     }
     if (pose->use_source_view_matrix && assets.trigonometry) {
-      auto object_matrix = starfox::simulation::transpose_q15(
+      const auto current_pitch = pose->use_interpolated_object_matrix
+                                     ? pose->source_pitch
+                                     : pose->pitch;
+      const auto current_yaw =
+          pose->use_interpolated_object_matrix ? pose->source_yaw : pose->yaw;
+      const auto current_roll = pose->use_interpolated_object_matrix
+                                    ? pose->source_roll
+                                    : pose->roll;
+      const auto current_object_matrix = starfox::simulation::transpose_q15(
           starfox::simulation::rotation_matrix_q15(
-              *assets.trigonometry, negated_source_angle(pose->pitch),
-              negated_source_angle(pose->yaw),
-              negated_source_angle(pose->roll)));
+              *assets.trigonometry, negated_source_angle(current_pitch),
+              negated_source_angle(current_yaw),
+              negated_source_angle(current_roll)));
+      auto object_matrix = current_object_matrix;
+      if (pose->use_interpolated_object_matrix) {
+        const auto previous_object_matrix = starfox::simulation::transpose_q15(
+            starfox::simulation::rotation_matrix_q15(
+                *assets.trigonometry,
+                negated_source_angle(pose->previous_source_pitch),
+                negated_source_angle(pose->previous_source_yaw),
+                negated_source_angle(pose->previous_source_roll)));
+        object_matrix = starfox::simulation::interpolate_rotation_matrix_q15(
+            previous_object_matrix, current_object_matrix,
+            static_cast<double>(std::min<std::uint16_t>(
+                pose->object_matrix_alpha_q8, 256u)) /
+                256.0);
+      }
       if (pose->flatten_shadow_matrix) {
         object_matrix[1] = 0;
         object_matrix[4] = 0;

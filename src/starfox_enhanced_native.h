@@ -15,6 +15,12 @@ typedef struct StarFoxEnhancedNativeShapePose {
   uint16_t pitch;
   uint16_t yaw;
   uint16_t roll;
+  uint16_t source_pitch;
+  uint16_t source_yaw;
+  uint16_t source_roll;
+  uint16_t previous_source_pitch;
+  uint16_t previous_source_yaw;
+  uint16_t previous_source_roll;
   int16_t vanish_x;
   int16_t vanish_y;
   uint16_t colour_pointer;
@@ -25,6 +31,8 @@ typedef struct StarFoxEnhancedNativeShapePose {
   uint8_t explosion_progress;
   uint8_t use_source_view_matrix;
   uint8_t use_source_depth_z;
+  uint8_t use_interpolated_object_matrix;
+  uint16_t object_matrix_alpha_q8;
   uint8_t use_shadow_shape;
   uint8_t flatten_shadow_matrix;
   uint8_t force_colour;
@@ -60,6 +68,9 @@ unsigned StarFoxEnhancedDrawCockpitHud(
     size_t rom_size, uint8_t rotation, uint8_t colour, uint8_t damage_flags,
     int horizontal_origin, int vertical_origin,
     uint8_t normal_colour_override);
+void StarFoxEnhancedInterpolateMatrixQ15(const int16_t previous[9],
+                                         const int16_t current[9],
+                                         uint16_t alpha_q8, int16_t out[9]);
 
 #ifdef __cplusplus
 }

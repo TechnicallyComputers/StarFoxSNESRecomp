@@ -1112,10 +1112,12 @@ static void fill_native_shape_pose(StarFoxEnhancedNativeShapePose *pose,
   int16_t view_x = g_source_snapshot.view_x;
   int16_t view_y = g_source_snapshot.view_y;
   int16_t view_z = g_source_snapshot.view_z;
+  int16_t view_matrix[9];
   int16_t world_x = object->world_x;
   int16_t world_y = object->world_y;
   int16_t world_z = object->world_z;
 
+  memcpy(view_matrix, g_source_snapshot.view_matrix, sizeof(view_matrix));
   if (g_source_interpolation_valid && alpha_q8 < 256) {
     previous_object = source_snapshot_const_object_by_handle(
         &g_previous_source_snapshot, object->handle);
@@ -1135,6 +1137,9 @@ static void fill_native_shape_pose(StarFoxEnhancedNativeShapePose *pose,
                                  alpha_q8);
     world_z = interpolate_i16_q8(previous_object->world_z, object->world_z,
                                  alpha_q8);
+    StarFoxEnhancedInterpolateMatrixQ15(g_previous_source_snapshot.view_matrix,
+                                        g_source_snapshot.view_matrix,
+                                        alpha_q8, view_matrix);
   }
   g_last_pose_alpha_q8 = alpha_q8;
 
@@ -1144,22 +1149,28 @@ static void fill_native_shape_pose(StarFoxEnhancedNativeShapePose *pose,
     const int16_t relative_y = subtract16(g_source_snapshot.shadow_height,
                                           view_y);
     const int16_t relative_z = subtract16(world_z, view_z);
-    pose->x = transform_q15_component(g_source_snapshot.view_matrix,
-                                      relative_x, relative_y, relative_z, 0);
-    pose->y = transform_q15_component(g_source_snapshot.view_matrix,
-                                      relative_x, relative_y, relative_z, 1);
-    pose->z = transform_q15_component(g_source_snapshot.view_matrix,
-                                      relative_x, relative_y, relative_z, 2);
+    pose->x =
+        transform_q15_component(view_matrix, relative_x, relative_y, relative_z,
+                                0);
+    pose->y =
+        transform_q15_component(view_matrix, relative_x, relative_y, relative_z,
+                                1);
+    pose->z =
+        transform_q15_component(view_matrix, relative_x, relative_y, relative_z,
+                                2);
   } else if (alpha_q8 < 256) {
     const int16_t relative_x = subtract16(world_x, view_x);
     const int16_t relative_y = subtract16(world_y, view_y);
     const int16_t relative_z = subtract16(world_z, view_z);
-    pose->x = transform_q15_component(g_source_snapshot.view_matrix,
-                                      relative_x, relative_y, relative_z, 0);
-    pose->y = transform_q15_component(g_source_snapshot.view_matrix,
-                                      relative_x, relative_y, relative_z, 1);
-    pose->z = transform_q15_component(g_source_snapshot.view_matrix,
-                                      relative_x, relative_y, relative_z, 2);
+    pose->x =
+        transform_q15_component(view_matrix, relative_x, relative_y, relative_z,
+                                0);
+    pose->y =
+        transform_q15_component(view_matrix, relative_x, relative_y, relative_z,
+                                1);
+    pose->z =
+        transform_q15_component(view_matrix, relative_x, relative_y, relative_z,
+                                2);
   } else {
     pose->x = object->camera_x;
     pose->y = object->camera_y;
@@ -1180,6 +1191,22 @@ static void fill_native_shape_pose(StarFoxEnhancedNativeShapePose *pose,
           ? interpolate_angle_q8((uint16_t)previous_object->roll << 8,
                                  (uint16_t)object->roll << 8, alpha_q8)
           : (uint16_t)object->roll << 8;
+  pose->source_pitch = (uint16_t)object->pitch << 8;
+  pose->source_yaw = (uint16_t)object->yaw << 8;
+  pose->source_roll = (uint16_t)object->roll << 8;
+  if (previous_object) {
+    pose->previous_source_pitch = (uint16_t)previous_object->pitch << 8;
+    pose->previous_source_yaw = (uint16_t)previous_object->yaw << 8;
+    pose->previous_source_roll = (uint16_t)previous_object->roll << 8;
+    if (alpha_q8 < 256) {
+      pose->use_interpolated_object_matrix = 1;
+      pose->object_matrix_alpha_q8 = alpha_q8;
+    }
+  } else {
+    pose->previous_source_pitch = pose->source_pitch;
+    pose->previous_source_yaw = pose->source_yaw;
+    pose->previous_source_roll = pose->source_roll;
+  }
   pose->vanish_x = g_source_snapshot.vanish_x;
   pose->vanish_y = g_source_snapshot.vanish_y;
   pose->colour_pointer = object->colour_pointer;
@@ -1198,8 +1225,7 @@ static void fill_native_shape_pose(StarFoxEnhancedNativeShapePose *pose,
   }
   pose->animation_frame = display_frame(object->animation_frame);
   pose->colour_frame = display_frame(object->colour_frame);
-  memcpy(pose->source_view_matrix, g_source_snapshot.view_matrix,
-         sizeof(pose->source_view_matrix));
+  memcpy(pose->source_view_matrix, view_matrix, sizeof(pose->source_view_matrix));
   pose->widescreen_extra = ws_extra;
   if (shadow) {
     pose->use_shadow_shape = 1;
