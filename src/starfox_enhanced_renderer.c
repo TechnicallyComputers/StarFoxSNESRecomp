@@ -2,6 +2,7 @@
 
 #include "common_rtl.h"
 #include "config.h"
+#include "debug_server.h"
 #include "snes/cart.h"
 #include "snes/ppu.h"
 #include "snes/snes.h"
@@ -14,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 enum {
   kRamAllst = 0x121d,
@@ -83,6 +85,7 @@ enum {
 };
 
 typedef struct NativeSourceObject {
+  uint8_t handle;
   uint16_t pointer;
   uint16_t shape;
   uint16_t colour_pointer;
@@ -167,6 +170,15 @@ typedef struct NativeRendererStats {
 } NativeRendererStats;
 
 static NativeSourceFrameSnapshot g_source_snapshot;
+static NativeRendererStats g_last_renderer_stats;
+static int g_last_render_width;
+static int g_last_render_height;
+static uint16_t g_last_render_widescreen_extra;
+static uint64_t g_last_semantic_hash;
+
+static int starfox_enhanced_debug_command(const char *cmd, const char *args,
+                                          DebugServerGameSendLine send_line);
+static void starfox_enhanced_register_debug_commands(void);
 
 enum {
   kNativeWorldMinActiveObjects = 8,
@@ -188,6 +200,39 @@ static uint8_t ram_byte(uint32_t address) { return g_ram[address]; }
 static int8_t ram_i8(uint32_t address) { return (int8_t)ram_byte(address); }
 
 static int16_t ram_i16(uint32_t address) { return (int16_t)ram_word(address); }
+
+static uint64_t fnv1a64_bytes(uint64_t hash, const void *data, size_t size) {
+  const uint8_t *bytes = (const uint8_t *)data;
+  for (size_t i = 0; i < size; i++) {
+    hash ^= bytes[i];
+    hash *= UINT64_C(1099511628211);
+  }
+  return hash;
+}
+
+static uint64_t source_snapshot_hash(const NativeSourceFrameSnapshot *snapshot) {
+  uint64_t hash = UINT64_C(1469598103934665603);
+  if (!snapshot)
+    return hash;
+  hash = fnv1a64_bytes(hash, snapshot, sizeof(*snapshot));
+  hash = fnv1a64_bytes(hash, &g_last_render_width, sizeof(g_last_render_width));
+  hash =
+      fnv1a64_bytes(hash, &g_last_render_height, sizeof(g_last_render_height));
+  hash = fnv1a64_bytes(hash, &g_last_render_widescreen_extra,
+                       sizeof(g_last_render_widescreen_extra));
+  return hash;
+}
+
+static void debug_sendf(DebugServerGameSendLine send_line, const char *fmt, ...) {
+  char buffer[2048];
+  va_list ap;
+  if (!send_line)
+    return;
+  va_start(ap, fmt);
+  vsnprintf(buffer, sizeof(buffer), fmt, ap);
+  va_end(ap);
+  send_line(buffer);
+}
 
 static uint16_t gsu_word_from(const SuperFx *fx, uint16_t address) {
   if (!fx || !fx->ram || address + 1 >= fx->ram_size)
@@ -594,6 +639,7 @@ static void latch_source_object(NativeSourceFrameSnapshot *snapshot,
   NativeSourceObject object;
   (void)slot;
   memset(&object, 0, sizeof(object));
+  object.handle = (uint8_t)slot;
   object.pointer = pointer;
   object.shape = ram_word(pointer + kObjShape);
   object.flags = ram_byte(pointer + kObjFlags);
@@ -702,6 +748,7 @@ static bool latch_allst_objects(NativeSourceFrameSnapshot *snapshot,
 void StarFoxEnhancedLatchSourceFrame(void) {
   NativeSourceFrameSnapshot snapshot;
   Cart *cart = g_snes ? g_snes->cart : NULL;
+  starfox_enhanced_register_debug_commands();
   memset(&snapshot, 0, sizeof(snapshot));
 
   if (!g_config.enhanced_renderer || !native_shape_overlay_enabled() || !cart ||
@@ -748,6 +795,7 @@ void StarFoxEnhancedLatchSourceFrame(void) {
 
 done:
   g_source_snapshot = snapshot;
+  g_last_semantic_hash = source_snapshot_hash(&g_source_snapshot);
 }
 
 static bool source_snapshot_current(void) {
@@ -975,6 +1023,211 @@ draw_source_snapshot_shapes(uint8_t *pixels, size_t pitch, int width,
       renderer_stats->cockpit_pixels += cockpit_pixels;
   }
   return drawn;
+}
+
+static void debug_native_shape_stats(const NativeSourceObject *object, int shadow,
+                                     StarFoxEnhancedNativeShapeStats *stats) {
+  Cart *cart = g_snes ? g_snes->cart : NULL;
+  uint8_t pixel[4] = {0, 0, 0, 0};
+  StarFoxEnhancedNativeShapePose pose;
+  if (stats)
+    memset(stats, 0, sizeof(*stats));
+  if (!object || !cart || !cart->rom || !cart->romSize)
+    return;
+  fill_native_shape_pose(&pose, object, g_last_render_widescreen_extra, shadow);
+  StarFoxEnhancedDrawNativeShape(pixel, sizeof(pixel), 1, 1, cart->rom,
+                                 cart->romSize, object->shape, &pose, stats);
+}
+
+static void debug_send_status(DebugServerGameSendLine send_line) {
+  extern int snes_frame_counter;
+  debug_sendf(send_line,
+              "ok frame=%d logic=%u flow=recomp width=%d height=%d objects=%u "
+              "draw=%u rendered=%u pixels=%u hash=%016llx",
+              source_snapshot_current() ? g_source_snapshot.frame
+                                        : snes_frame_counter,
+              (unsigned)g_source_snapshot.game_frame, g_last_render_width,
+              g_last_render_height, g_source_snapshot.active_count,
+              g_source_snapshot.draw_count, g_last_renderer_stats.drawn,
+              g_last_renderer_stats.filled_pixels,
+              (unsigned long long)g_last_semantic_hash);
+}
+
+static void debug_send_objects(DebugServerGameSendLine send_line) {
+  NativeSourceFrameSnapshot snapshot = g_source_snapshot;
+  for (unsigned i = 0; i < snapshot.active_count; i++) {
+    const NativeSourceObject *object = &snapshot.objects[i];
+    debug_sendf(send_line,
+                "object handle=%u shape=%x flags=%x type=%x "
+                "sflags=%x,%x,%x,%x world=%d,%d,%d rot=%u,%u,%u "
+                "anim=%u colour_frame=%u colour_table=%x tex=%d,%d",
+                (unsigned)object->handle, (unsigned)object->shape,
+                (unsigned)object->flags, (unsigned)object->type,
+                (unsigned)object->sflags[0], (unsigned)object->sflags[1],
+                (unsigned)object->sflags[2], (unsigned)object->sflags[3],
+                (int)object->world_x, (int)object->world_y,
+                (int)object->world_z, (unsigned)object->pitch,
+                (unsigned)object->yaw, (unsigned)object->roll,
+                (unsigned)object->animation_frame,
+                (unsigned)object->colour_frame,
+                (unsigned)object->colour_pointer,
+                (int)object->texture_scroll_x, (int)object->texture_scroll_y);
+  }
+  send_line("objects-end");
+}
+
+static void debug_send_draw_order(DebugServerGameSendLine send_line) {
+  char buffer[2048];
+  size_t used = 0;
+  NativeSourceFrameSnapshot snapshot = g_source_snapshot;
+  used += (size_t)snprintf(buffer + used, sizeof(buffer) - used, "draw_order");
+  for (unsigned i = 0; i < snapshot.draw_count && used < sizeof(buffer); i++) {
+    const uint8_t object_index = snapshot.draw_order[i];
+    const unsigned handle =
+        object_index < snapshot.active_count
+            ? (unsigned)snapshot.objects[object_index].handle
+            : (unsigned)object_index;
+    used += (size_t)snprintf(buffer + used, sizeof(buffer) - used, " %u",
+                             handle);
+  }
+  buffer[sizeof(buffer) - 1] = 0;
+  send_line(buffer);
+}
+
+static void debug_send_pose(DebugServerGameSendLine send_line,
+                            const NativeSourceObject *object, unsigned handle,
+                            int shadow) {
+  StarFoxEnhancedNativeShapePose pose;
+  StarFoxEnhancedNativeShapeStats stats;
+  fill_native_shape_pose(&pose, object, g_last_render_widescreen_extra, shadow);
+  debug_native_shape_stats(object, shadow, &stats);
+  debug_sendf(send_line,
+              "pose handle=%u shape=%x lod=%x colour=%x world=%d,%d,%d "
+              "camera=%d,%d,%d rot=%u,%u,%u type=%x sflags=%x,%x,%x,%x "
+              "shadow=%d particle=%d text=%d scaled=%d vertices=%u faces=%u",
+              handle, (unsigned)object->shape, (unsigned)stats.selected_lod,
+              (unsigned)pose.colour_pointer, (int)object->world_x,
+              (int)object->world_y, (int)object->world_z, (int)pose.x,
+              (int)pose.y, (int)pose.z, (unsigned)pose.pitch,
+              (unsigned)pose.yaw, (unsigned)pose.roll, (unsigned)object->type,
+              (unsigned)object->sflags[0], (unsigned)object->sflags[1],
+              (unsigned)object->sflags[2], (unsigned)object->sflags[3], shadow,
+              (!shadow && (object->sflags[0] & kAsfPartObj) != 0) ? 1 : 0,
+              (!shadow && (object->sflags[0] & kAsfTextObj) != 0) ? 1 : 0,
+              (!shadow && (object->sflags[0] & kAsfScaledSprite) != 0) ? 1 : 0,
+              stats.decoded_vertices, stats.decoded_faces);
+}
+
+static void debug_send_poses(DebugServerGameSendLine send_line) {
+  NativeSourceFrameSnapshot snapshot = g_source_snapshot;
+  if ((snapshot.player_fly_mode & kPfmShadows) != 0) {
+    for (unsigned i = 0; i < snapshot.draw_count; i++) {
+      const uint8_t object_index = snapshot.draw_order[i];
+      if (object_index >= snapshot.active_count)
+        continue;
+      const NativeSourceObject *object = &snapshot.objects[object_index];
+      if (source_object_has_shadow_shape(object))
+        debug_send_pose(send_line, object, (unsigned)object->handle, 1);
+    }
+  }
+  for (unsigned i = 0; i < snapshot.draw_count; i++) {
+    const uint8_t object_index = snapshot.draw_order[i];
+    if (object_index >= snapshot.active_count)
+      continue;
+    const NativeSourceObject *object = &snapshot.objects[object_index];
+    if (source_object_has_native_shape(object))
+      debug_send_pose(send_line, object, (unsigned)object->handle, 0);
+  }
+  send_line("poses-end");
+}
+
+static void debug_send_ppu(DebugServerGameSendLine send_line) {
+  Ppu *ppu = g_ppu;
+  if (!ppu) {
+    send_line("ppu unavailable");
+    return;
+  }
+  debug_sendf(send_line,
+              "ppu mode=%u main=%x obsel=%x bg1_chr=%x bg1_scr=%x "
+              "bg2_chr=%x bg2_scr=%x bg3_chr=%x bg3_scr=%x "
+              "bg2_vofs=%u bg2_hofs=%u brightness=%u dots=0",
+              (unsigned)(ppu->bgmode & 0x07u),
+              (unsigned)ppu->screenEnabled[0], (unsigned)ppu->obsel,
+              (unsigned)((ppu->bgTileAdr >> 0) & 0xfu),
+              (unsigned)ppu->bgXsc[0], (unsigned)((ppu->bgTileAdr >> 4) & 0xfu),
+              (unsigned)ppu->bgXsc[1], (unsigned)((ppu->bgTileAdr >> 8) & 0xfu),
+              (unsigned)ppu->bgXsc[2], 0u, 0u, (unsigned)PPU_brightness(ppu));
+}
+
+static void debug_send_render_stats(DebugServerGameSendLine send_line) {
+  debug_sendf(send_line,
+              "render_stats active=%u draw_order=%u candidates=%u "
+              "rendered=%u particles=%u invalid=%u culled=%u text=%u "
+              "scaled=%u pixels=%u decode=%u vertices=%u faces=%u "
+              "cockpit_pixels=%u native_ready=%u native_suppressed=%u",
+              g_source_snapshot.active_count, g_source_snapshot.draw_count,
+              g_last_renderer_stats.candidates, g_last_renderer_stats.drawn,
+              g_source_snapshot.unsupported_particle,
+              g_source_snapshot.unsupported_invalid,
+              g_source_snapshot.unsupported_culled,
+              g_source_snapshot.unsupported_text,
+              g_source_snapshot.unsupported_scaled,
+              g_last_renderer_stats.filled_pixels,
+              g_last_renderer_stats.decode_failures,
+              g_last_renderer_stats.vertices, g_last_renderer_stats.faces,
+              g_last_renderer_stats.cockpit_pixels,
+              g_last_renderer_stats.native_world_ready,
+              g_last_renderer_stats.native_world_suppressed);
+}
+
+static int starfox_enhanced_debug_command(const char *cmd, const char *args,
+                                          DebugServerGameSendLine send_line) {
+  (void)args;
+  if (!cmd || !send_line)
+    return 0;
+  if (strcmp(cmd, "status") == 0 || strcmp(cmd, "state") == 0) {
+    debug_send_status(send_line);
+    return 1;
+  }
+  if (strcmp(cmd, "objects") == 0) {
+    debug_send_objects(send_line);
+    return 1;
+  }
+  if (strcmp(cmd, "draw_order") == 0) {
+    debug_send_draw_order(send_line);
+    return 1;
+  }
+  if (strcmp(cmd, "poses") == 0) {
+    debug_send_poses(send_line);
+    return 1;
+  }
+  if (strcmp(cmd, "ppu") == 0) {
+    debug_send_ppu(send_line);
+    return 1;
+  }
+  if (strcmp(cmd, "render_stats") == 0) {
+    debug_send_render_stats(send_line);
+    return 1;
+  }
+  if (strcmp(cmd, "frame_hash") == 0) {
+    debug_sendf(send_line, "hash=%016llx",
+                (unsigned long long)g_last_semantic_hash);
+    return 1;
+  }
+  if (strcmp(cmd, "window") == 0) {
+    debug_send_status(send_line);
+    send_line("window-end");
+    return 1;
+  }
+  return 0;
+}
+
+static void starfox_enhanced_register_debug_commands(void) {
+  static int registered;
+  if (registered)
+    return;
+  debug_server_set_game_command_handler(starfox_enhanced_debug_command);
+  registered = 1;
 }
 
 static void clear_frame(uint8_t *pixels, size_t pitch, int width, int height) {
@@ -1215,6 +1468,11 @@ StarFoxEnhancedRenderFrame(RtlEnhancedRendererFrame *frame) {
     draw_debug_probe(frame->pixels, frame->pitch, frame->width, frame->height,
                      frame->widescreen_extra);
   }
+  g_last_renderer_stats = stats;
+  g_last_render_width = frame->width;
+  g_last_render_height = frame->height;
+  g_last_render_widescreen_extra = frame->widescreen_extra;
+  g_last_semantic_hash = source_snapshot_hash(&g_source_snapshot);
   free(native_world);
   maybe_dump_frame(frame);
   return kRtlEnhancedRender_Handled;

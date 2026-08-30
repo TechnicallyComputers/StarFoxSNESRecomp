@@ -138,3 +138,17 @@ Authentic-mode stock SNES PPU validation.
 `tools/starfox_enhanced_oracle_compare.py` attaches to oracle-compatible TCP
 endpoints and writes bounded status/object/pose/BMP snapshots for mismatches or
 single-endpoint dumps.
+
+StarFoxSNESRecomp exposes its Enhanced semantic snapshot through the trace
+server's generic game-command bridge. Use the TCP debug build and prefix
+semantic commands with `game `:
+
+```powershell
+$env:SNESRECOMP_DEBUG_PORT = '4582'
+.\build-tcp-debug\StarFoxSNESRecomp.exe --config codex_validation_enhanced_21_9.ini --paused .\starfox.sfc
+
+py tools\starfox_enhanced_oracle_compare.py `
+  --a-port 4582 --a-prefix "game " --a-no-hello `
+  --dump-only --steps 1 --no-screenshot `
+  --out-dir _codex_validation\semantic_smoke
+```
