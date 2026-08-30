@@ -476,7 +476,7 @@ static void update_source_interpolation_state(
 
 static uint16_t source_interpolation_alpha_q8(void) {
   extern int snes_frame_counter;
-  int elapsed = snes_frame_counter - g_source_logic_change_frame + 1;
+  int elapsed = snes_frame_counter - g_source_logic_change_frame;
   if (!g_source_interpolation_valid)
     return 256;
   if (elapsed <= 0)
