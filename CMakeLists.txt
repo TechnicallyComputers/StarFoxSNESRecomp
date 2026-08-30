@@ -54,7 +54,6 @@ add_executable(StarFoxSNESRecomp
   src/glsl_shader.c
   src/main.c
   src/opengl.c
-  src/post_mortem.c
   src/starfox_enhanced_renderer.c
   src/starfox_mods.c
   src/starfox_cpu_infra.c
@@ -93,6 +92,9 @@ endif()
 # unconditionally, so hardcoding SDL2 here put two SDL majors in one binary.
 # Hosts include "desktop/sdl_compat.h" rather than <SDL.h> so both majors build.
 snesrecomp_target_sdl(StarFoxSNESRecomp)
+if(NOT SNESRECOMP_ENABLE_TRACE)
+  snesrecomp_target_post_mortem(StarFoxSNESRecomp TIER2)
+endif()
 
 # Dear ImGui pre-boot launcher (GUI) from the shared recomp-ui repo. One call
 # wires sources/includes/RECOMP_LAUNCHER define/CXX/asset-staging (same Star
