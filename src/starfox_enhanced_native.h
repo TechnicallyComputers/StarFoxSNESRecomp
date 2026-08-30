@@ -9,9 +9,9 @@ extern "C" {
 #endif
 
 typedef struct StarFoxEnhancedNativeShapePose {
-  int32_t x;
-  int32_t y;
-  int32_t z;
+  double x;
+  double y;
+  double z;
   uint16_t pitch;
   uint16_t yaw;
   uint16_t roll;
@@ -26,7 +26,7 @@ typedef struct StarFoxEnhancedNativeShapePose {
   uint16_t colour_pointer;
   uint16_t depth_colours;
   uint16_t depth_thresholds;
-  int32_t source_depth_z;
+  double source_depth_z;
   uint8_t object_depth_offset;
   uint8_t explosion_progress;
   uint8_t use_source_view_matrix;

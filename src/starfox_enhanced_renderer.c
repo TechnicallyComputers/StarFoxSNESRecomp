@@ -322,9 +322,19 @@ static int32_t rounded_q8_delta(int32_t delta, uint16_t alpha_q8) {
   return (int32_t)-(((-scaled) + 128) / 256);
 }
 
-static int16_t interpolate_i16_q8(int16_t from, int16_t to, uint16_t alpha_q8) {
-  const int32_t delta = (int32_t)subtract16(to, from);
-  return wrap16_i64((int32_t)from + rounded_q8_delta(delta, alpha_q8));
+static double source_word_difference_f64(double value, double origin) {
+  double difference = value - origin;
+  while (difference > 32767.0)
+    difference -= 65536.0;
+  while (difference < -32768.0)
+    difference += 65536.0;
+  return difference;
+}
+
+static double interpolate_i16_f64(int16_t from, int16_t to,
+                                  uint16_t alpha_q8) {
+  return (double)from + source_word_difference_f64((double)to, (double)from) *
+                            ((double)alpha_q8 / 256.0);
 }
 
 static uint16_t interpolate_angle_q8(uint16_t from, uint16_t to,
@@ -336,6 +346,35 @@ static uint16_t interpolate_angle_q8(uint16_t from, uint16_t to,
     delta += 65536;
   return (uint16_t)wrap16_i64((int32_t)from +
                               rounded_q8_delta(delta, alpha_q8));
+}
+
+static double transform_q15_component_f64(const int16_t matrix[9], double x,
+                                          double y, double z,
+                                          unsigned column) {
+  return (x * (double)matrix[column] + y * (double)matrix[3 + column] +
+          z * (double)matrix[6 + column]) /
+         32768.0;
+}
+
+static void world_to_camera_f64(const int16_t matrix[9], double world_x,
+                                double world_y, double world_z, double view_x,
+                                double view_y, double view_z, double *out_x,
+                                double *out_y, double *out_z) {
+  const double relative_x = source_word_difference_f64(world_x, view_x);
+  const double relative_y = source_word_difference_f64(world_y, view_y);
+  const double relative_z = source_word_difference_f64(world_z, view_z);
+  if (out_x)
+    *out_x =
+        transform_q15_component_f64(matrix, relative_x, relative_y, relative_z,
+                                    0);
+  if (out_y)
+    *out_y =
+        transform_q15_component_f64(matrix, relative_x, relative_y, relative_z,
+                                    1);
+  if (out_z)
+    *out_z =
+        transform_q15_component_f64(matrix, relative_x, relative_y, relative_z,
+                                    2);
 }
 
 static NativeSourceObject *
@@ -691,13 +730,13 @@ static void log_native_shape_diagnostic(
   }
   fprintf(stderr,
           "[starfox-native-shape] frame=%d draw_index=%u ptr=%04x "
-          "shape=%04x lod=%04x camera=(%d,%d,%d) rot=(%u,%u,%u) "
+          "shape=%04x lod=%04x camera=(%.3f,%.3f,%.3f) rot=(%u,%u,%u) "
           "vanish=(%d,%d) ws_extra=%u flags=%02x type=%02x count=%u "
           "sflags=%02x/%02x/%02x/%02x colour=%04x depth_ofs=%u "
           "frames=%u/%u scroll=(%d,%d) decoded=%u/%u visible=%u "
           "decode_failures=%u result=%d\n",
           snes_frame_counter, draw_index, object->pointer, object->shape,
-          stats->selected_lod, (int)pose->x, (int)pose->y, (int)pose->z,
+          stats->selected_lod, pose->x, pose->y, pose->z,
           (unsigned)pose->pitch, (unsigned)pose->yaw, (unsigned)pose->roll,
           (int)pose->vanish_x, (int)pose->vanish_y,
           (unsigned)pose->widescreen_extra, (unsigned)object->flags,
@@ -1109,13 +1148,13 @@ static void fill_native_shape_pose(StarFoxEnhancedNativeShapePose *pose,
       (object->sflags[0] & kAsfShadowShape) != 0;
   uint16_t alpha_q8 = source_interpolation_alpha_q8();
   const NativeSourceObject *previous_object = NULL;
-  int16_t view_x = g_source_snapshot.view_x;
-  int16_t view_y = g_source_snapshot.view_y;
-  int16_t view_z = g_source_snapshot.view_z;
+  double view_x = g_source_snapshot.view_x;
+  double view_y = g_source_snapshot.view_y;
+  double view_z = g_source_snapshot.view_z;
   int16_t view_matrix[9];
-  int16_t world_x = object->world_x;
-  int16_t world_y = object->world_y;
-  int16_t world_z = object->world_z;
+  double world_x = object->world_x;
+  double world_y = object->world_y;
+  double world_z = object->world_z;
 
   memcpy(view_matrix, g_source_snapshot.view_matrix, sizeof(view_matrix));
   if (g_source_interpolation_valid && alpha_q8 < 256) {
@@ -1125,18 +1164,21 @@ static void fill_native_shape_pose(StarFoxEnhancedNativeShapePose *pose,
   if (!previous_object)
     alpha_q8 = 256;
   if (alpha_q8 < 256) {
-    view_x = interpolate_i16_q8(g_previous_source_snapshot.view_x,
-                                g_source_snapshot.view_x, alpha_q8);
-    view_y = interpolate_i16_q8(g_previous_source_snapshot.view_y,
-                                g_source_snapshot.view_y, alpha_q8);
-    view_z = interpolate_i16_q8(g_previous_source_snapshot.view_z,
-                                g_source_snapshot.view_z, alpha_q8);
-    world_x = interpolate_i16_q8(previous_object->world_x, object->world_x,
-                                 alpha_q8);
-    world_y = interpolate_i16_q8(previous_object->world_y, object->world_y,
-                                 alpha_q8);
-    world_z = interpolate_i16_q8(previous_object->world_z, object->world_z,
-                                 alpha_q8);
+    view_x = interpolate_i16_f64(g_previous_source_snapshot.view_x,
+                                 g_source_snapshot.view_x, alpha_q8);
+    view_y = interpolate_i16_f64(g_previous_source_snapshot.view_y,
+                                 g_source_snapshot.view_y, alpha_q8);
+    view_z = interpolate_i16_f64(g_previous_source_snapshot.view_z,
+                                 g_source_snapshot.view_z, alpha_q8);
+    world_x =
+        interpolate_i16_f64(previous_object->world_x, object->world_x,
+                            alpha_q8);
+    world_y =
+        interpolate_i16_f64(previous_object->world_y, object->world_y,
+                            alpha_q8);
+    world_z =
+        interpolate_i16_f64(previous_object->world_z, object->world_z,
+                            alpha_q8);
     StarFoxEnhancedInterpolateMatrixQ15(g_previous_source_snapshot.view_matrix,
                                         g_source_snapshot.view_matrix,
                                         alpha_q8, view_matrix);
@@ -1145,36 +1187,12 @@ static void fill_native_shape_pose(StarFoxEnhancedNativeShapePose *pose,
 
   memset(pose, 0, sizeof(*pose));
   if (shadow && !true_colour_shadow) {
-    const int16_t relative_x = subtract16(world_x, view_x);
-    const int16_t relative_y = subtract16(g_source_snapshot.shadow_height,
-                                          view_y);
-    const int16_t relative_z = subtract16(world_z, view_z);
-    pose->x =
-        transform_q15_component(view_matrix, relative_x, relative_y, relative_z,
-                                0);
-    pose->y =
-        transform_q15_component(view_matrix, relative_x, relative_y, relative_z,
-                                1);
-    pose->z =
-        transform_q15_component(view_matrix, relative_x, relative_y, relative_z,
-                                2);
-  } else if (alpha_q8 < 256) {
-    const int16_t relative_x = subtract16(world_x, view_x);
-    const int16_t relative_y = subtract16(world_y, view_y);
-    const int16_t relative_z = subtract16(world_z, view_z);
-    pose->x =
-        transform_q15_component(view_matrix, relative_x, relative_y, relative_z,
-                                0);
-    pose->y =
-        transform_q15_component(view_matrix, relative_x, relative_y, relative_z,
-                                1);
-    pose->z =
-        transform_q15_component(view_matrix, relative_x, relative_y, relative_z,
-                                2);
+    world_to_camera_f64(view_matrix, world_x, g_source_snapshot.shadow_height,
+                        world_z, view_x, view_y, view_z, &pose->x, &pose->y,
+                        &pose->z);
   } else {
-    pose->x = object->camera_x;
-    pose->y = object->camera_y;
-    pose->z = object->camera_z;
+    world_to_camera_f64(view_matrix, world_x, world_y, world_z, view_x, view_y,
+                        view_z, &pose->x, &pose->y, &pose->z);
   }
   pose->pitch =
       alpha_q8 < 256
@@ -1212,7 +1230,11 @@ static void fill_native_shape_pose(StarFoxEnhancedNativeShapePose *pose,
   pose->colour_pointer = object->colour_pointer;
   pose->depth_colours = g_source_snapshot.depth_colours;
   pose->depth_thresholds = g_source_snapshot.depth_thresholds;
-  pose->source_depth_z = object->camera_z;
+  world_to_camera_f64(g_source_snapshot.view_matrix, object->world_x,
+                      object->world_y, object->world_z,
+                      g_source_snapshot.view_x, g_source_snapshot.view_y,
+                      g_source_snapshot.view_z, NULL, NULL,
+                      &pose->source_depth_z);
   pose->object_depth_offset = object->object_depth_offset;
   pose->explosion_progress = object->explosion_count;
   pose->use_source_view_matrix = 1;
@@ -1408,13 +1430,13 @@ static void debug_send_pose(DebugServerGameSendLine send_line,
   debug_native_shape_stats(object, shadow, &stats);
   debug_sendf(send_line,
               "pose handle=%u shape=%x lod=%x colour=%x world=%d,%d,%d "
-              "camera=%d,%d,%d rot=%u,%u,%u type=%x sflags=%x,%x,%x,%x "
+              "camera=%.3f,%.3f,%.3f rot=%u,%u,%u type=%x sflags=%x,%x,%x,%x "
               "shadow=%d particle=%d text=%d scaled=%d alpha_q8=%u "
               "vertices=%u faces=%u",
               handle, (unsigned)object->shape, (unsigned)stats.selected_lod,
               (unsigned)pose.colour_pointer, (int)object->world_x,
-              (int)object->world_y, (int)object->world_z, (int)pose.x,
-              (int)pose.y, (int)pose.z, (unsigned)pose.pitch,
+              (int)object->world_y, (int)object->world_z, pose.x,
+              pose.y, pose.z, (unsigned)pose.pitch,
               (unsigned)pose.yaw, (unsigned)pose.roll, (unsigned)object->type,
               (unsigned)object->sflags[0], (unsigned)object->sflags[1],
               (unsigned)object->sflags[2], (unsigned)object->sflags[3], shadow,
