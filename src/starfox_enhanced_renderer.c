@@ -1834,12 +1834,16 @@ StarFoxEnhancedRenderFrame(RtlEnhancedRendererFrame *frame) {
 
   clear_frame(frame->pixels, frame->pitch, frame->width, frame->height);
   StarFoxDrawPpuFrame();
+  const bool gameplay_hud_frame =
+      frame->widescreen_extra != 0 &&
+      source_snapshot_is_gameplay_training_world_frame();
   int native_ppu_done = StarFoxEnhancedDrawNativePpuLayers(
       frame->pixels, frame->pitch, frame->width, frame->height,
-      frame->widescreen_extra, suppress_superfx_world_bg1 ? 1 : 0);
+      frame->widescreen_extra, suppress_superfx_world_bg1 ? 1 : 0,
+      gameplay_hud_frame ? 1 : 0);
   const bool mode2_scene_frame =
       frame->widescreen_extra != 0 && g_ppu && PPU_mode(g_ppu) == 2 &&
-      source_snapshot_is_gameplay_training_world_frame();
+      gameplay_hud_frame;
   const bool mode2_transition_frame =
       frame->widescreen_extra != 0 && g_ppu && PPU_mode(g_ppu) == 2 &&
       !source_snapshot_is_gameplay_training_world_frame();
@@ -1861,6 +1865,11 @@ StarFoxEnhancedRenderFrame(RtlEnhancedRendererFrame *frame) {
     if (suppress_superfx_world_bg1 || mode2_native_overlay) {
       composite_bgra_nonzero(frame->pixels, frame->pitch, native_world,
                              native_world_pitch, frame->width, frame->height);
+    }
+    if (gameplay_hud_frame) {
+      StarFoxEnhancedDrawGameplayHudSprites(frame->pixels, frame->pitch,
+                                            frame->width, frame->height,
+                                            frame->widescreen_extra);
     }
     log_renderer_stats(&stats, frame->widescreen_extra, frame->width,
                        frame->height);

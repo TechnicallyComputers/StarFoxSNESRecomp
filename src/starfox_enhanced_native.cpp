@@ -239,6 +239,33 @@ static void write_bgra(const starfox::render::Framebuffer &source,
   }
 }
 
+static std::size_t overlay_bgra_nonzero(
+    const starfox::render::Framebuffer &source,
+    const starfox::simulation::SnesPpuState &ppu_state, const Ppu *ppu,
+    std::uint8_t *pixels, std::size_t pitch) {
+  std::size_t visible = 0;
+  const std::uint8_t level = brightness(ppu);
+  for (std::uint32_t y = 0; y < source.height(); y++) {
+    std::uint8_t *row = pixels + static_cast<std::size_t>(y) * pitch;
+    for (std::uint32_t x = 0; x < source.width(); x++) {
+      const auto palette_index = source.get(x, y);
+      if (palette_index == 0u)
+        continue;
+      const std::uint16_t cgram = ppu_state.cgram[palette_index];
+      std::uint8_t *dst = row + static_cast<std::size_t>(x) * 4u;
+      dst[2] = static_cast<std::uint8_t>(
+          (static_cast<std::uint16_t>(expand5(cgram)) * level) / 15u);
+      dst[1] = static_cast<std::uint8_t>(
+          (static_cast<std::uint16_t>(expand5(cgram >> 5u)) * level) / 15u);
+      dst[0] = static_cast<std::uint8_t>(
+          (static_cast<std::uint16_t>(expand5(cgram >> 10u)) * level) / 15u);
+      dst[3] = 0xff;
+      visible++;
+    }
+  }
+  return visible;
+}
+
 static std::size_t
 count_visible_pixels(const starfox::render::Framebuffer &framebuffer) {
   std::size_t count = 0;
@@ -308,7 +335,8 @@ static void maybe_log_native_ppu(const Ppu *ppu,
 static void draw_mode_layers(const starfox::simulation::SnesPpuState &ppu,
                              starfox::render::Framebuffer &framebuffer,
                              std::uint16_t widescreen_extra,
-                             bool suppress_superfx_world_bg1) {
+                             bool suppress_superfx_world_bg1,
+                             bool anchor_edge_hud) {
   const starfox::render::BackgroundRenderer background_renderer;
   const starfox::render::SpriteRenderer sprite_renderer;
   const auto all = starfox::render::TilePriorityPass::all;
@@ -324,44 +352,47 @@ static void draw_mode_layers(const starfox::simulation::SnesPpuState &ppu,
 
   if (ppu.background_mode == 1u) {
     background_renderer.draw_bg3(ppu, framebuffer, low, viewport_origin, false);
-    sprite_renderer.draw_objects(ppu, framebuffer, 0u, viewport_origin, false);
+    sprite_renderer.draw_objects(ppu, framebuffer, 0u, viewport_origin, false,
+                                 anchor_edge_hud);
     if (!ppu.bg3_high_priority) {
       background_renderer.draw_bg3(ppu, framebuffer, high, viewport_origin,
                                    false);
     }
-    sprite_renderer.draw_objects(ppu, framebuffer, 1u, viewport_origin, false);
+    sprite_renderer.draw_objects(ppu, framebuffer, 1u, viewport_origin, false,
+                                 anchor_edge_hud);
     background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y, framebuffer,
                                  low, viewport_origin, false);
-    sprite_renderer.draw_objects(ppu, framebuffer, 2u, viewport_origin, false);
+    sprite_renderer.draw_objects(ppu, framebuffer, 2u, viewport_origin, false,
+                                 anchor_edge_hud);
     background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y, framebuffer,
                                  high, viewport_origin, false);
   } else if (ppu.background_mode == 2u) {
     background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y, framebuffer,
                                  low, viewport_origin, extend_scene);
     sprite_renderer.draw_objects(ppu, framebuffer, 0u, viewport_origin,
-                                 extend_scene);
+                                 extend_scene, anchor_edge_hud);
     sprite_renderer.draw_objects(ppu, framebuffer, 1u, viewport_origin,
-                                 extend_scene);
+                                 extend_scene, anchor_edge_hud);
     background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y, framebuffer,
                                  high, viewport_origin, extend_scene);
     sprite_renderer.draw_objects(ppu, framebuffer, 2u, viewport_origin,
-                                 extend_scene);
+                                 extend_scene, anchor_edge_hud);
   } else if (ppu.background_mode == 3u) {
     background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y, framebuffer,
                                  low, viewport_origin, extend_scene);
     sprite_renderer.draw_objects(ppu, framebuffer, 0u, viewport_origin,
-                                 extend_scene);
+                                 extend_scene, anchor_edge_hud);
     // Diagnostic native scene replacement removes only the SuperFX world plane;
     // BG2 and OAM stay in the same order as Enhanced's PPU presenter.
     if (!suppress_superfx_world_bg1)
       background_renderer.draw_bg1(ppu, framebuffer, low, viewport_origin,
                                    extend_scene);
     sprite_renderer.draw_objects(ppu, framebuffer, 1u, viewport_origin,
-                                 extend_scene);
+                                 extend_scene, anchor_edge_hud);
     background_renderer.draw_bg2(ppu, bg2_scroll_x, bg2_scroll_y, framebuffer,
                                  high, viewport_origin, extend_scene);
     sprite_renderer.draw_objects(ppu, framebuffer, 2u, viewport_origin,
-                                 extend_scene);
+                                 extend_scene, anchor_edge_hud);
     if (!suppress_superfx_world_bg1)
       background_renderer.draw_bg1(ppu, framebuffer, high, viewport_origin,
                                    extend_scene);
@@ -371,9 +402,42 @@ static void draw_mode_layers(const starfox::simulation::SnesPpuState &ppu,
     background_renderer.draw_bg3(ppu, framebuffer, all, viewport_origin, false);
     for (std::uint8_t priority = 0; priority < 3u; priority++) {
       sprite_renderer.draw_objects(ppu, framebuffer, priority, viewport_origin,
-                                   extend_scene);
+                                   extend_scene, anchor_edge_hud);
     }
   }
+}
+
+static bool oam_object_is_gameplay_hud(
+    const starfox::simulation::SnesPpuState &ppu, std::size_t object) {
+  const auto low = object * 4u;
+  const auto high = 512u + object / 4u;
+  const auto high_bits =
+      static_cast<std::uint8_t>(ppu.oam[high] >> ((object & 3u) * 2u));
+  if (ppu.oam[low] == 0u && ppu.oam[low + 1u] == 0u &&
+      ppu.oam[low + 2u] == 0u && ppu.oam[low + 3u] == 0u) {
+    return false;
+  }
+
+  auto x = static_cast<std::int32_t>(ppu.oam[low]) |
+           (static_cast<std::int32_t>(high_bits & 1u) << 8u);
+  if (x >= 256)
+    x -= 512;
+  const auto y = ppu.oam[low + 1u];
+  return (y < 32u && x < 128) || y >= 168u || (y >= 128u && x < 128);
+}
+
+static starfox::simulation::SnesPpuState gameplay_hud_oam_only(
+    starfox::simulation::SnesPpuState ppu) {
+  for (std::size_t object = 0; object < 128u; object++) {
+    if (oam_object_is_gameplay_hud(ppu, object))
+      continue;
+    const auto low = object * 4u;
+    ppu.oam[low] = 0u;
+    ppu.oam[low + 1u] = 0u;
+    ppu.oam[low + 2u] = 0u;
+    ppu.oam[low + 3u] = 0u;
+  }
+  return ppu;
 }
 
 } // namespace
@@ -381,7 +445,8 @@ static void draw_mode_layers(const starfox::simulation::SnesPpuState &ppu,
 extern "C" int StarFoxEnhancedDrawNativePpuLayers(uint8_t *pixels, size_t pitch,
                                                   int width, int height,
                                                   uint16_t widescreen_extra,
-                                                  int suppress_superfx_world_bg1) {
+                                                  int suppress_superfx_world_bg1,
+                                                  int anchor_edge_hud) {
   if (!g_ppu || !pixels || pitch < static_cast<size_t>(width) * 4u ||
       width <= 0 || height <= 0)
     return 0;
@@ -391,13 +456,34 @@ extern "C" int StarFoxEnhancedDrawNativePpuLayers(uint8_t *pixels, size_t pitch,
                                            static_cast<std::uint32_t>(height));
   framebuffer.clear(0);
   draw_mode_layers(ppu_state, framebuffer, widescreen_extra,
-                   suppress_superfx_world_bg1 != 0);
+                   suppress_superfx_world_bg1 != 0, anchor_edge_hud != 0);
   const auto visible_pixels = count_visible_pixels(framebuffer);
   maybe_log_native_ppu(g_ppu, ppu_state, widescreen_extra, visible_pixels);
   if (visible_pixels == 0)
     return 0;
   write_bgra(framebuffer, ppu_state, g_ppu, pixels, pitch);
   return 1;
+}
+
+extern "C" unsigned StarFoxEnhancedDrawGameplayHudSprites(
+    uint8_t *pixels, size_t pitch, int width, int height,
+    uint16_t widescreen_extra) {
+  if (!g_ppu || !pixels || pitch < static_cast<size_t>(width) * 4u ||
+      width <= 0 || height <= 0 || widescreen_extra == 0)
+    return 0;
+
+  const auto ppu_state = gameplay_hud_oam_only(make_ppu_state(g_ppu));
+  starfox::render::Framebuffer framebuffer(static_cast<std::uint32_t>(width),
+                                           static_cast<std::uint32_t>(height));
+  const starfox::render::SpriteRenderer sprite_renderer;
+  const auto viewport_origin = static_cast<std::int32_t>(widescreen_extra);
+  framebuffer.clear(0);
+  for (std::uint8_t priority = 0; priority < 4u; priority++) {
+    sprite_renderer.draw_objects(ppu_state, framebuffer, priority,
+                                 viewport_origin, true, true);
+  }
+  return static_cast<unsigned>(
+      overlay_bgra_nonzero(framebuffer, ppu_state, g_ppu, pixels, pitch));
 }
 
 extern "C" unsigned StarFoxEnhancedDrawCockpitHud(

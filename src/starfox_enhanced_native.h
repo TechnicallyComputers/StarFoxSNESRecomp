@@ -57,7 +57,11 @@ typedef struct StarFoxEnhancedNativeShapeStats {
 
 int StarFoxEnhancedDrawNativePpuLayers(uint8_t *pixels, size_t pitch, int width,
                                        int height, uint16_t widescreen_extra,
-                                       int suppress_superfx_world_bg1);
+                                       int suppress_superfx_world_bg1,
+                                       int anchor_edge_hud);
+unsigned StarFoxEnhancedDrawGameplayHudSprites(uint8_t *pixels, size_t pitch,
+                                               int width, int height,
+                                               uint16_t widescreen_extra);
 int StarFoxEnhancedDrawNativeShape(uint8_t *pixels, size_t pitch, int width,
                                    int height, const uint8_t *rom,
                                    size_t rom_size, uint16_t shape_address,
