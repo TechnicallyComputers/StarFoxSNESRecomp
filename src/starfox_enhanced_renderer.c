@@ -31,12 +31,24 @@ enum {
   kRamGameFrame = 0x15bb,
   kRamHudRotation = 0x154e,
   kRamPlayerFlyMode = 0x1565,
+  kRamShieldUp = 0x1752,
+  kRamWhichFriend = 0x191f,
+  kRamFriendsMsg = 0x1920,
+  kRamMsgCount1 = 0x1922,
+  kRamMsgCount2 = 0x1923,
   kRamShadowHeight = 0x19dc,
+  kGsuFacePtr = 0x0018,
   kGsuVanishX = 0x0034,
   kGsuVanishY = 0x0036,
   kGsuDepthColours = 0x004e,
   kGsuDepthThresholds = 0x0050,
   kGsuPlayerFlyMode = 0x0174,
+  kGsuBossMaxHp = 0x016e,
+  kGsuBossHp = 0x0170,
+  kGsuDamage = 0x018c,
+  kGsuBoostAnim = 0x018e,
+  kGsuShieldUp = 0x0190,
+  kGsuMeters = 0x0200,
   kGsuShadowHeight = 0x0204,
   kGsuHudColour = 0x3512,
   kGsuHudDamageFlags = 0x3514,
@@ -67,6 +79,7 @@ enum {
   kRomColourWhite = 0x800c,
   kRomColourRed = 0x80fc,
   kRomColourSpecial = 0x82ed,
+  kRomMessagesBank = 0x010000,
   kRomDepthThresholdDefault = 0x8faa,
   kShapeNull = 0xaca1,
   kAfExplosion = 0x01,
@@ -171,6 +184,8 @@ typedef struct NativeRendererStats {
   unsigned lines;
   unsigned line_pixels;
   unsigned cockpit_pixels;
+  unsigned comms_pixels;
+  unsigned meter_pixels;
   unsigned native_world_ready;
   unsigned native_world_suppressed;
 } NativeRendererStats;
@@ -205,6 +220,7 @@ enum {
 };
 
 static bool g_native_world_replacement_active;
+static int g_gameplay_hud_hold_until_frame;
 
 void StarFoxDrawPpuFrame(void);
 
@@ -766,7 +782,7 @@ static void log_renderer_stats(const NativeRendererStats *stats,
           "unsupported inv=%u shadow=%u particle=%u scaled=%u text=%u "
           "culled=%u invalid=%u decode=%u vertices=%u faces=%u "
           "filled_faces=%u filled_pixels=%u lines=%u line_pixels=%u "
-          "cockpit_pixels=%u\n",
+          "cockpit_pixels=%u comms_pixels=%u meter_pixels=%u\n",
           snes_frame_counter, width, height, ws_extra,
           g_source_snapshot.draw_count, g_source_snapshot.active_count,
           g_source_snapshot.frame, stats->entries, stats->candidates,
@@ -777,13 +793,19 @@ static void log_renderer_stats(const NativeRendererStats *stats,
           stats->unsupported_text, stats->unsupported_culled,
           stats->unsupported_invalid, stats->decode_failures, stats->vertices,
           stats->faces, stats->filled_faces, stats->filled_pixels, stats->lines,
-          stats->line_pixels, stats->cockpit_pixels);
+          stats->line_pixels, stats->cockpit_pixels, stats->comms_pixels,
+          stats->meter_pixels);
 }
 
 static bool source_object_has_drawable_shape(const NativeSourceObject *object) {
   return object && object->shape != 0 && object->shape != kShapeNull &&
          object->metadata_valid && !object->culled &&
          (object->sflags[0] & (kAsfPartObj | kAsfTextObj)) == 0 &&
+         (object->sflags[3] & kAsfInvisible4) == 0;
+}
+
+static bool source_object_has_native_text(const NativeSourceObject *object) {
+  return object && (object->sflags[0] & kAsfTextObj) != 0 &&
          (object->sflags[3] & kAsfInvisible4) == 0;
 }
 
@@ -799,8 +821,6 @@ static bool source_object_has_shadow_shape(const NativeSourceObject *object) {
 
 static uint16_t effective_colour_pointer(const NativeSourceObject *object) {
   const uint8_t flags = object->sflags[0];
-  if ((flags & kAsfTextObj) != 0)
-    return 0;
   if ((flags & 0x02u) != 0 && (flags & kAsfScaledSprite) == 0) {
     return (flags & 0x01u) != 0 ? kRomColourRed : kRomColourWhite;
   }
@@ -897,10 +917,8 @@ static bool classify_and_sort_source_object(NativeSourceFrameSnapshot *snapshot,
     snapshot->unsupported_particle++;
     return false;
   }
-  if ((object->sflags[0] & kAsfTextObj) != 0) {
-    snapshot->unsupported_text++;
-    return false;
-  }
+  if ((object->sflags[0] & kAsfTextObj) != 0)
+    return true;
   if (!object->shape || object->shape == kShapeNull)
     return false;
   if (!object->metadata_valid)
@@ -1064,12 +1082,20 @@ static bool source_snapshot_current(void) {
   return age >= 0 && age <= 1;
 }
 
-static bool source_snapshot_is_gameplay_training_world_frame(void) {
+static bool source_snapshot_has_gameplay_training_world_context(void) {
   if (!source_snapshot_current())
     return false;
   if (g_source_snapshot.active_count < kNativeWorldMinActiveObjects)
     return false;
-  if (g_source_snapshot.unsupported_text != 0)
+  return true;
+}
+
+static bool source_snapshot_has_live_mode2_context(void) {
+  return source_snapshot_current();
+}
+
+static bool source_snapshot_is_gameplay_training_world_frame(void) {
+  if (!source_snapshot_has_gameplay_training_world_context())
     return false;
   return true;
 }
@@ -1086,8 +1112,6 @@ static bool source_snapshot_can_hold_native_world(
   if (!source_snapshot_current())
     return false;
   if (g_source_snapshot.active_count < kNativeWorldHoldMinActiveObjects)
-    return false;
-  if (g_source_snapshot.unsupported_text != 0)
     return false;
   if (!stats)
     return false;
@@ -1259,6 +1283,47 @@ static void fill_native_shape_pose(StarFoxEnhancedNativeShapePose *pose,
   }
 }
 
+static unsigned draw_projected_text_object(uint8_t *pixels, size_t pitch,
+                                           int width, int height,
+                                           const Cart *cart,
+                                           uint16_t ws_extra,
+                                           const NativeSourceObject *object) {
+  StarFoxEnhancedNativeShapePose pose;
+  fill_native_shape_pose(&pose, object, ws_extra, 0);
+  return StarFoxEnhancedDrawProjectedText(
+      pixels, pitch, width, height, cart->rom, cart->romSize,
+      object->colour_pointer, object->object_depth_offset,
+      object->texture_scroll_x, &pose);
+}
+
+static unsigned draw_comms_hud(uint8_t *pixels, size_t pitch, int width,
+                               int height) {
+  Cart *cart = g_snes ? g_snes->cart : NULL;
+  const uint8_t open_count = ram_byte(kRamMsgCount1);
+  const uint8_t animation_count = ram_byte(kRamMsgCount2);
+  const uint8_t friend_id = ram_byte(kRamWhichFriend);
+  const uint16_t face_pointer = gsu_word(kGsuFacePtr);
+  const uint32_t text_address =
+      (uint32_t)kRomMessagesBank | (uint32_t)ram_word(kRamFriendsMsg);
+  if (!cart || !cart->rom || !cart->romSize)
+    return 0;
+  return StarFoxEnhancedDrawCommsHud(
+      pixels, pitch, width, height, cart->rom, cart->romSize, open_count,
+      animation_count, friend_id, face_pointer, text_address);
+}
+
+static unsigned draw_gameplay_hud_meters(uint8_t *pixels, size_t pitch,
+                                         int width, int height,
+                                         uint16_t ws_extra) {
+  const uint8_t damage = gsu_byte(kGsuDamage);
+  const uint8_t boost = gsu_byte(kGsuBoostAnim);
+  return StarFoxEnhancedDrawGameplayHudMeters(
+      pixels, pitch, width, height, ws_extra, damage ? damage : 36u,
+      boost ? boost : 36u,
+      gsu_byte(kGsuShieldUp) != 0 || ram_word(kRamShieldUp) != 0,
+      source_snapshot_current(), gsu_byte(kGsuBossHp), gsu_byte(kGsuBossMaxHp));
+}
+
 static unsigned draw_native_shape_object(uint8_t *pixels, size_t pitch,
                                          int width, int height,
                                          const Cart *cart, uint16_t ws_extra,
@@ -1333,6 +1398,9 @@ draw_source_snapshot_shapes(uint8_t *pixels, size_t pitch, int width,
       drawn += draw_native_shape_object(pixels, pitch, width, height, cart,
                                         ws_extra, i, object, 0,
                                         renderer_stats);
+    } else if (source_object_has_native_text(object)) {
+      drawn += draw_projected_text_object(pixels, pitch, width, height, cart,
+                                          ws_extra, object) != 0 ? 1u : 0u;
     }
   }
   if ((g_source_snapshot.hud_rotation & 0x8000u) != 0) {
@@ -1513,13 +1581,30 @@ static void debug_send_source_view(DebugServerGameSendLine send_line) {
               (unsigned)snapshot.player_fly_mode);
 }
 
+static void debug_send_comms(DebugServerGameSendLine send_line) {
+  debug_sendf(send_line,
+              "comms msg1=%u msg2=%u friend=%u msg=%04x text=%06x "
+              "face=%04x active=%u text_visible=%u pixels=%u",
+              (unsigned)ram_byte(kRamMsgCount1),
+              (unsigned)ram_byte(kRamMsgCount2),
+              (unsigned)ram_byte(kRamWhichFriend),
+              (unsigned)ram_word(kRamFriendsMsg),
+              (unsigned)(kRomMessagesBank | ram_word(kRamFriendsMsg)),
+              (unsigned)gsu_word(kGsuFacePtr),
+              (unsigned)(ram_byte(kRamMsgCount1) != 0 ||
+                         ram_byte(kRamMsgCount2) != 0),
+              (unsigned)(ram_byte(kRamMsgCount1) != 0 &&
+                         ram_byte(kRamMsgCount2) >= 5),
+              g_last_renderer_stats.comms_pixels);
+}
+
 static void debug_send_render_stats(DebugServerGameSendLine send_line) {
   debug_sendf(send_line,
               "render_stats active=%u draw_order=%u candidates=%u "
               "rendered=%u particles=%u invalid=%u culled=%u text=%u "
               "scaled=%u pixels=%u decode=%u vertices=%u faces=%u "
-              "cockpit_pixels=%u declined_ppu=%u native_ready=%u "
-              "native_suppressed=%u",
+              "cockpit_pixels=%u comms_pixels=%u meter_pixels=%u "
+              "declined_ppu=%u native_ready=%u native_suppressed=%u",
               g_source_snapshot.active_count, g_source_snapshot.draw_count,
               g_last_renderer_stats.candidates, g_last_renderer_stats.drawn,
               g_source_snapshot.unsupported_particle,
@@ -1531,6 +1616,8 @@ static void debug_send_render_stats(DebugServerGameSendLine send_line) {
               g_last_renderer_stats.decode_failures,
               g_last_renderer_stats.vertices, g_last_renderer_stats.faces,
               g_last_renderer_stats.cockpit_pixels,
+              g_last_renderer_stats.comms_pixels,
+              g_last_renderer_stats.meter_pixels,
               g_last_renderer_stats.declined_native_ppu,
               g_last_renderer_stats.native_world_ready,
               g_last_renderer_stats.native_world_suppressed);
@@ -1567,6 +1654,10 @@ static int starfox_enhanced_debug_command(const char *cmd, const char *args,
   }
   if (strcmp(cmd, "render_stats") == 0) {
     debug_send_render_stats(send_line);
+    return 1;
+  }
+  if (strcmp(cmd, "comms") == 0) {
+    debug_send_comms(send_line);
     return 1;
   }
   if (strcmp(cmd, "frame_hash") == 0) {
@@ -1644,6 +1735,118 @@ static void copy_stock_center(const RtlEnhancedRendererFrame *frame) {
            g_ppu->renderBuffer + (size_t)y * g_ppu->renderPitch,
            (size_t)copy_width * 4u);
   }
+}
+
+static unsigned overlay_stock_superfx_comms_region(
+    uint8_t *dst, size_t dst_pitch, int width, int height) {
+  if (!dst || !g_ppu || !g_ppu->renderBuffer || !g_ppu->renderPitch ||
+      width <= 0 || height <= 0)
+    return 0;
+  const int src_face_left = kSuperFxHorizontalInset + 48;
+  const int src_face_right = kSuperFxHorizontalInset + 80;
+  const int src_text_left = kSuperFxHorizontalInset + 82;
+  const int src_text_right = kSuperFxHorizontalInset + 176;
+  const int src_top = kSuperFxVerticalInset + 152;
+  const int src_bottom = kSuperFxVerticalInset + 192;
+  const int ui_left = (width - 224) / 2;
+  unsigned text_pixels = 0;
+  for (int y = src_top; y < src_bottom && y < height; y++) {
+    const uint8_t *src_row = g_ppu->renderBuffer + (size_t)y * g_ppu->renderPitch;
+    for (int src_x = src_text_left; src_x < src_text_right; src_x++) {
+      const uint8_t *s = src_row + (size_t)src_x * 4u;
+      const unsigned luminance = (unsigned)s[0] + (unsigned)s[1] +
+                                 (unsigned)s[2];
+      if (luminance >= 360u)
+        text_pixels++;
+    }
+  }
+  if (text_pixels < 16u)
+    return 0;
+  unsigned visible = 0;
+  for (int y = src_top; y < src_bottom && y < height; y++) {
+    const uint8_t *src_row = g_ppu->renderBuffer + (size_t)y * g_ppu->renderPitch;
+    uint8_t *dst_row = dst + (size_t)y * dst_pitch;
+    for (int src_x = src_face_left; src_x < src_text_right; src_x++) {
+      const int in_face = src_x >= src_face_left && src_x < src_face_right;
+      const int in_text = src_x >= src_text_left && src_x < src_text_right;
+      if (!in_face && !in_text)
+        continue;
+      const int dst_x =
+          ui_left + (in_face ? 48 + (src_x - src_face_left)
+                             : 82 + (src_x - src_text_left));
+      if (dst_x < 0 || dst_x >= width)
+        continue;
+      const uint8_t *s = src_row + (size_t)src_x * 4u;
+      if (s[0] < 16 && s[1] < 16 && s[2] < 16)
+        continue;
+      if (in_face && s[1] > s[2] + 24 && s[1] > s[0] + 24)
+        continue;
+      if (in_text) {
+        const unsigned luminance = (unsigned)s[0] + (unsigned)s[1] +
+                                   (unsigned)s[2];
+        if (luminance < 360u)
+          continue;
+      }
+      memcpy(dst_row + (size_t)dst_x * 4u, s, 4u);
+      visible++;
+    }
+  }
+  return visible;
+}
+
+static int stock_meter_pixel_is_hud(const uint8_t *s) {
+  if (!s || (s[0] < 16 && s[1] < 16 && s[2] < 16))
+    return 0;
+  if (s[1] > s[2] + 24 && s[1] > s[0] + 24)
+    return 0;
+  return ((unsigned)s[0] + (unsigned)s[1] + (unsigned)s[2]) >= 120u;
+}
+
+static unsigned overlay_stock_superfx_meter(uint8_t *dst, size_t dst_pitch,
+                                            int width, int height,
+                                            int source_x, int source_y,
+                                            int target_x, int target_y,
+                                            int meter_width,
+                                            int meter_height) {
+  if (!dst || !g_ppu || !g_ppu->renderBuffer || !g_ppu->renderPitch ||
+      width <= 0 || height <= 0 || meter_width <= 0 || meter_height <= 0)
+    return 0;
+  unsigned visible = 0;
+  for (int y = 0; y < meter_height; y++) {
+    const int src_y = source_y + y;
+    const int dst_y = target_y + y;
+    if (src_y < 0 || src_y >= height || dst_y < 0 || dst_y >= height)
+      continue;
+    const uint8_t *src_row =
+        g_ppu->renderBuffer + (size_t)src_y * g_ppu->renderPitch;
+    uint8_t *dst_row = dst + (size_t)dst_y * dst_pitch;
+    for (int x = 0; x < meter_width; x++) {
+      const int src_x = source_x + x;
+      const int dst_x = target_x + x;
+      if (src_x < 0 || src_x >= width || dst_x < 0 || dst_x >= width)
+        continue;
+      const uint8_t *s = src_row + (size_t)src_x * 4u;
+      if (!stock_meter_pixel_is_hud(s))
+        continue;
+      memcpy(dst_row + (size_t)dst_x * 4u, s, 4u);
+      visible++;
+    }
+  }
+  return visible;
+}
+
+static unsigned overlay_stock_superfx_hud_meters(uint8_t *dst, size_t dst_pitch,
+                                                 int width, int height) {
+  const int src_y = kSuperFxVerticalInset + 176;
+  const int shield_src_x = kSuperFxHorizontalInset + 8;
+  const int boost_src_x = kSuperFxHorizontalInset + 176;
+  unsigned visible = 0;
+  visible += overlay_stock_superfx_meter(dst, dst_pitch, width, height,
+                                         shield_src_x, src_y, 24, 192, 40, 8);
+  visible += overlay_stock_superfx_meter(dst, dst_pitch, width, height,
+                                         boost_src_x, src_y, width - 64, 192,
+                                         40, 8);
+  return visible;
 }
 
 static bool native_frame_looks_suspect(const RtlEnhancedRendererFrame *frame) {
@@ -1830,23 +2033,31 @@ StarFoxEnhancedRenderFrame(RtlEnhancedRendererFrame *frame) {
     }
   } else {
     g_native_world_replacement_active = false;
+    g_gameplay_hud_hold_until_frame = 0;
   }
 
   clear_frame(frame->pixels, frame->pitch, frame->width, frame->height);
   StarFoxDrawPpuFrame();
-  const bool gameplay_hud_frame =
-      frame->widescreen_extra != 0 &&
-      source_snapshot_is_gameplay_training_world_frame();
+  extern int snes_frame_counter;
+  if (frame->widescreen_extra != 0 &&
+      (native_world_ready || suppress_superfx_world_bg1)) {
+    g_gameplay_hud_hold_until_frame = snes_frame_counter + 90;
+  } else if (frame->widescreen_extra == 0) {
+    g_gameplay_hud_hold_until_frame = 0;
+  }
+  const bool gameplay_hud_frame = frame->widescreen_extra != 0 &&
+                                  snes_frame_counter <=
+                                      g_gameplay_hud_hold_until_frame;
   int native_ppu_done = StarFoxEnhancedDrawNativePpuLayers(
       frame->pixels, frame->pitch, frame->width, frame->height,
       frame->widescreen_extra, suppress_superfx_world_bg1 ? 1 : 0,
       gameplay_hud_frame ? 1 : 0);
   const bool mode2_scene_frame =
       frame->widescreen_extra != 0 && g_ppu && PPU_mode(g_ppu) == 2 &&
-      gameplay_hud_frame;
+      source_snapshot_has_live_mode2_context();
   const bool mode2_transition_frame =
       frame->widescreen_extra != 0 && g_ppu && PPU_mode(g_ppu) == 2 &&
-      !source_snapshot_is_gameplay_training_world_frame();
+      !source_snapshot_has_live_mode2_context();
   if (!suppress_superfx_world_bg1 && native_ppu_done &&
       (mode2_transition_frame ||
        (!mode2_scene_frame && native_frame_looks_suspect(frame)))) {
@@ -1857,7 +2068,7 @@ StarFoxEnhancedRenderFrame(RtlEnhancedRendererFrame *frame) {
   log_native_world_gate_transition(&stats, native_world_ready ? 1 : 0,
                                    suppress_superfx_world_bg1 ? 1 : 0,
                                    native_ppu_done);
-  if (!native_ppu_done && !suppress_superfx_world_bg1)
+  if (!native_ppu_done && !suppress_superfx_world_bg1 && !mode2_scene_frame)
     copy_stock_center(frame);
   if (shape_overlay_enabled) {
     const bool mode2_native_overlay =
@@ -1867,6 +2078,19 @@ StarFoxEnhancedRenderFrame(RtlEnhancedRendererFrame *frame) {
                              native_world_pitch, frame->width, frame->height);
     }
     if (gameplay_hud_frame) {
+      const unsigned meter_pixels = draw_gameplay_hud_meters(
+          frame->pixels, frame->pitch, frame->width, frame->height,
+          frame->widescreen_extra);
+      stats.meter_pixels = meter_pixels;
+      if (meter_pixels < 32u)
+        stats.meter_pixels += overlay_stock_superfx_hud_meters(
+            frame->pixels, frame->pitch, frame->width, frame->height);
+      stats.comms_pixels =
+          draw_comms_hud(frame->pixels, frame->pitch, frame->width,
+                         frame->height);
+      if (stats.comms_pixels == 0)
+        stats.comms_pixels = overlay_stock_superfx_comms_region(
+            frame->pixels, frame->pitch, frame->width, frame->height);
       StarFoxEnhancedDrawGameplayHudSprites(frame->pixels, frame->pitch,
                                             frame->width, frame->height,
                                             frame->widescreen_extra);

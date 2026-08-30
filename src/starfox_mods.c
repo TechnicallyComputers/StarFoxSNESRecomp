@@ -34,8 +34,7 @@ enum {
 static const char kStarFoxModsPackageId[] = "starfox-enhanced-builtins";
 static const char kStarFoxModsPackageVersion[] = "0.1.0";
 static const char kStarFoxModsPackageName[] = "Star Fox Enhanced Built-ins";
-static const char kStarFoxModsAuthor[] =
-    "kandowontu, UltraStarFox contributors, StarFoxSNESRecomp";
+static const char kStarFoxModsAuthor[] = "kandowontu (starfox-enhanced)";
 static const char kStarFoxModsSourceName[] = "starfox-enhanced";
 static const char kStarFoxModsSourceUrl[] =
     "https://github.com/kandowontu/starfox-enhanced";
@@ -43,11 +42,13 @@ static const char kStarFoxModsSourceUrl[] =
 static const StarFoxModFeatureInfo kStarFoxModFeatures[] = {
   {
     "display_mode", "Display Mode", "Display",
-    "Select the native renderer output width."
+    "Adapted from DisplayMode in starfox-enhanced; selects the separate "
+    "native renderer output width."
   },
   {
     "enhanced_renderer", "Enhanced Renderer", "Display",
-    "Enable the native Star Fox renderer path."
+    "Enable the separate native Star Fox renderer path adapted from "
+    "starfox-enhanced."
   },
   {
     "crosshair_color", "Crosshair Color", "Gameplay",
@@ -173,7 +174,8 @@ static int package_get(void *ctx, int index,
   mod_copy(out->name, sizeof(out->name), kStarFoxModsPackageName);
   mod_copy(out->author, sizeof(out->author), kStarFoxModsAuthor);
   mod_copy(out->description, sizeof(out->description),
-           "Built-in Star Fox Enhanced-derived options backed by config.ini.");
+           "Built-in options adapted from kandowontu's starfox-enhanced; "
+           "widescreen uses a separate native renderer.");
   mod_copy(out->license, sizeof(out->license), "Mixed");
   mod_copy(out->source_name, sizeof(out->source_name),
            kStarFoxModsSourceName);

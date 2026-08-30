@@ -31,6 +31,7 @@ add_library(StarFoxEnhancedNativeRenderer OBJECT
   third_party/starfox-enhanced/src/assets/rom.cpp
   third_party/starfox-enhanced/src/assets/shape_decoder.cpp
   third_party/starfox-enhanced/src/render/background_renderer.cpp
+  third_party/starfox-enhanced/src/render/scaled_text_renderer.cpp
   third_party/starfox-enhanced/src/render/software_renderer.cpp
   third_party/starfox-enhanced/src/render/sprite_renderer.cpp
   third_party/starfox-enhanced/src/simulation/math.cpp

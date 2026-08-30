@@ -62,16 +62,34 @@ int StarFoxEnhancedDrawNativePpuLayers(uint8_t *pixels, size_t pitch, int width,
 unsigned StarFoxEnhancedDrawGameplayHudSprites(uint8_t *pixels, size_t pitch,
                                                int width, int height,
                                                uint16_t widescreen_extra);
+unsigned StarFoxEnhancedDrawGameplayHudMeters(
+    uint8_t *pixels, size_t pitch, int width, int height,
+    uint16_t widescreen_extra, uint8_t damage, uint8_t boost, int shield_up,
+    int enabled, uint8_t boss_health, uint8_t boss_max_health);
 int StarFoxEnhancedDrawNativeShape(uint8_t *pixels, size_t pitch, int width,
                                    int height, const uint8_t *rom,
                                    size_t rom_size, uint16_t shape_address,
                                    const StarFoxEnhancedNativeShapePose *pose,
                                    StarFoxEnhancedNativeShapeStats *stats);
+unsigned StarFoxEnhancedDrawProjectedText(uint8_t *pixels, size_t pitch,
+                                          int width, int height,
+                                          const uint8_t *rom, size_t rom_size,
+                                          uint16_t message_pointer,
+                                          uint8_t colour,
+                                          int8_t size_adjustment,
+                                          const StarFoxEnhancedNativeShapePose *pose);
 unsigned StarFoxEnhancedDrawCockpitHud(
     uint8_t *pixels, size_t pitch, int width, int height, const uint8_t *rom,
     size_t rom_size, uint8_t rotation, uint8_t colour, uint8_t damage_flags,
     int horizontal_origin, int vertical_origin,
     uint8_t normal_colour_override);
+unsigned StarFoxEnhancedDrawCommsHud(uint8_t *pixels, size_t pitch, int width,
+                                     int height, const uint8_t *rom,
+                                     size_t rom_size, uint8_t open_count,
+                                     uint8_t animation_count,
+                                     uint8_t friend_id,
+                                     uint16_t face_pointer,
+                                     uint32_t text_address);
 void StarFoxEnhancedInterpolateMatrixQ15(const int16_t previous[9],
                                          const int16_t current[9],
                                          uint16_t alpha_q8, int16_t out[9]);

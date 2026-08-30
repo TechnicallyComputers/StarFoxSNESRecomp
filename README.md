@@ -17,8 +17,9 @@ behavior but must not replace or diverge from it.
 
 The game boots and its attract sequence, menus, route selection, training, and
 gameplay have passed basic interactive testing. The project also includes an
-opt-in expanded viewport, with 16:9 as the current validated widescreen preset.
-Authentic 4:3 output remains available.
+opt-in separate native renderer adapted from Star Fox Enhanced for widened
+presentation, with 16:9, 21:9, and 32:9 presets under active validation.
+Authentic 4:3 output remains available and does not use the Enhanced renderer.
 
 Longer play sessions, additional routes, save-state behavior, and non-Windows
 builds still need more coverage before the project should be described as
@@ -89,35 +90,31 @@ in `config.ini`:
 
 ## Widescreen
 
-Set `Widescreen` in `config.ini` to one of the following:
+Widescreen output is an opt-in separate native renderer adapted from
+`DisplayMode` and renderer work in kandowontu's
+[starfox-enhanced](https://github.com/kandowontu/starfox-enhanced). Credit for
+the widescreen renderer design and reference implementation belongs to the Star
+Fox Enhanced author and project; this repo integrates that model with the
+retail Star Fox recomp runtime.
 
-- `Off` for the original 4:3 presentation.
-- `16:10` for a narrower expanded viewport.
-- `16:9` for the tested expanded viewport.
-- `21:9` for an ultrawide expanded viewport.
-- `32:9` for Enhanced-style super-ultrawide output.
-- An integer from `0` through `272` for a custom number of extra pixels per
-  side.
+Enable `EnhancedRenderer = 1`, then set `DisplayMode` in `config.ini` to one of
+the following fixed modes:
 
-Enhanced-style `DisplayMode` values are also accepted:
-`0`/`4:3`, `1`/`16:9`, `2`/`16:10`, `3`/`21:9`, and `4`/`32:9`.
+- `0`/`4:3` for the original presentation width.
+- `1`/`16:9` for widescreen.
+- `2`/`16:10` for a narrower expanded viewport.
+- `3`/`21:9` for ultrawide.
+- `4`/`32:9` for super-ultrawide.
+
+`Widescreen` remains accepted as a compatibility alias, including integer extra
+pixels per side, but Star Fox stock rendering remains 4:3. Wider output is only
+used by the Enhanced native renderer path.
 
 See [docs/TRUE_WIDESCREEN.md](docs/TRUE_WIDESCREEN.md) for the rendering
 model, validation notes, and the remaining spawn/culling audit.
 
-The launcher exposes the fixed 16:9 toggle. Use `config.ini` directly for
-`16:10`, `21:9`, `32:9`, or custom extra-pixel values.
-
-Set `WidescreenHud = 1` to anchor gameplay HUD elements to the expanded
-viewport edges in widescreen. Set it to `0` to keep the original 4:3 HUD
-placement while the playfield remains widened.
-
-Advanced HUD layout keys expose the current Star Fox anchor geometry:
-`WidescreenHudOamFirstSlot`, `WidescreenHudOamSlots`,
-`WidescreenHudOamHeight`, `WidescreenHudLeftEnd`,
-`WidescreenHudRightStart`, `WidescreenHudBgY0`, and
-`WidescreenHudBgY1`. Defaults match the validated HUD slots and meter band;
-this is not the full Enhanced mouse-driven per-element editor yet.
+The launcher Mods view exposes the Enhanced renderer and fixed display modes.
+An adaptive display mode is not implemented yet.
 
 ## Enhanced-Derived Mods
 

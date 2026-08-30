@@ -27,6 +27,10 @@ The Enhanced repository is pinned as a reference-only submodule. Use it for
 provenance, symbol names, architecture notes, timing/rendering validation
 ideas, and portable mod candidates. Do not copy generated ROM data, BPS patch
 outputs, prebuilt binaries, or reconstructed game assets into this repository.
+The StarFoxSNESRecomp widescreen renderer is adapted from this project's
+separate native renderer and `DisplayMode` model; attribution for that
+widescreen design and reference implementation belongs to kandowontu's
+Star Fox Enhanced project.
 
 The Star Fox EX upstream listed above is recorded from Enhanced's
 `config/upstream-ex.json`. Verify availability before relying on it for new
