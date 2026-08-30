@@ -32,6 +32,10 @@ Enhanced PPU compositor also extends the surviving BG/OAM layers across the
 host scene width instead of clipping them back to the centered cartridge
 viewport. The old stock PPU output remains unextended; this only affects the
 opt-in Enhanced presentation path.
+Live Mode 2 scene frames are allowed to keep that extended native PPU output
+even when the native-world replacement gate is not suppressing BG1; the
+side-margin corruption guard remains for unclassified native PPU frames, not
+for known-good Mode 2 terrain/background presentation.
 
 Enhanced native scene replacement renders native shapes and the provisional
 shadow pass into a transparent scratch BGRA buffer before composing PPU layers.
@@ -64,9 +68,12 @@ output and is no longer built into the Star Fox target. A provisional direct
 bridge to the pinned Enhanced `SoftwareRenderer` exists behind
 `SNESRECOMP_ENHANCED_NATIVE_SHAPES=1`; it decodes Star Fox ROM shapes through
 Enhanced's `ShapeDecoder` and renders them through Enhanced's mesh/material
-pipeline from a read-only source-frame snapshot of retail WRAM. The snapshot is
-latched at `StarFoxEnhancedPostFrame` only when both `EnhancedRenderer` and the
-native-shape diagnostic gate are enabled. Retail runtime validation currently
+pipeline from a read-only source-frame snapshot of retail WRAM.
+`SNESRECOMP_ENHANCED_FRAME_BMP_DIR=<dir>` can dump bounded Enhanced
+presentation-frame sequences with optional `_START`, `_END`, and `_STEP`
+environment variables. The snapshot is latched at `StarFoxEnhancedPostFrame`
+only when both `EnhancedRenderer` and the native-shape diagnostic gate are
+enabled. Retail runtime validation currently
 proves `ALLST=$121d`, `ALFREELST=$121f`, `ALBLKS=$0336`, `AL_SIZE=$36`,
 `VIEWPOSX/Y/Z=$00c1/$00c3/$00c5`, `VANISHX/Y=$00ca/$00cc`,
 `GAMEFRAME=$15bb`, and `WMAT11W=$161b`. The active object rows are 0x36 bytes,

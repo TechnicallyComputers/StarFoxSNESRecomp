@@ -1186,7 +1186,8 @@ static void debug_send_render_stats(DebugServerGameSendLine send_line) {
               "render_stats active=%u draw_order=%u candidates=%u "
               "rendered=%u particles=%u invalid=%u culled=%u text=%u "
               "scaled=%u pixels=%u decode=%u vertices=%u faces=%u "
-              "cockpit_pixels=%u native_ready=%u native_suppressed=%u",
+              "cockpit_pixels=%u declined_ppu=%u native_ready=%u "
+              "native_suppressed=%u",
               g_source_snapshot.active_count, g_source_snapshot.draw_count,
               g_last_renderer_stats.candidates, g_last_renderer_stats.drawn,
               g_source_snapshot.unsupported_particle,
@@ -1198,6 +1199,7 @@ static void debug_send_render_stats(DebugServerGameSendLine send_line) {
               g_last_renderer_stats.decode_failures,
               g_last_renderer_stats.vertices, g_last_renderer_stats.faces,
               g_last_renderer_stats.cockpit_pixels,
+              g_last_renderer_stats.declined_native_ppu,
               g_last_renderer_stats.native_world_ready,
               g_last_renderer_stats.native_world_suppressed);
 }
@@ -1403,22 +1405,8 @@ static void dump_bgra_png(const char *path, const uint8_t *pixels, size_t pitch,
   free(rgba);
 }
 
-static void maybe_dump_frame(const RtlEnhancedRendererFrame *frame) {
-  static int checked;
-  static const char *path;
-  static int target = -1;
-  static int dumped;
-  if (!checked) {
-    checked = 1;
-    path = getenv("SNESRECOMP_ENHANCED_FRAME_BMP");
-    const char *target_env = getenv("SNESRECOMP_ENHANCED_FRAME_BMP_FRAME");
-    if (target_env && *target_env)
-      target = atoi(target_env);
-  }
-  if (!path || dumped)
-    return;
-  extern int snes_frame_counter;
-  if (target >= 0 && snes_frame_counter < target)
+static void dump_bgra_auto(const char *path, const RtlEnhancedRendererFrame *frame) {
+  if (!path || !frame)
     return;
   const size_t path_len = strlen(path);
   if (path_len >= 4 && strcmp(path + path_len - 4, ".png") == 0)
@@ -1427,7 +1415,53 @@ static void maybe_dump_frame(const RtlEnhancedRendererFrame *frame) {
   else
     dump_bgra_bmp(path, frame->pixels, frame->pitch, frame->width,
                   frame->height);
-  dumped = 1;
+}
+
+static void maybe_dump_frame(const RtlEnhancedRendererFrame *frame) {
+  static int checked;
+  static const char *path;
+  static int target = -1;
+  static int dumped;
+  static const char *dir;
+  static int dir_next = -1;
+  static int dir_end = -1;
+  static int dir_step = 60;
+  if (!checked) {
+    checked = 1;
+    path = getenv("SNESRECOMP_ENHANCED_FRAME_BMP");
+    const char *target_env = getenv("SNESRECOMP_ENHANCED_FRAME_BMP_FRAME");
+    if (target_env && *target_env)
+      target = atoi(target_env);
+    dir = getenv("SNESRECOMP_ENHANCED_FRAME_BMP_DIR");
+    if (dir && *dir) {
+      const char *start_env = getenv("SNESRECOMP_ENHANCED_FRAME_BMP_START");
+      const char *end_env = getenv("SNESRECOMP_ENHANCED_FRAME_BMP_END");
+      const char *step_env = getenv("SNESRECOMP_ENHANCED_FRAME_BMP_STEP");
+      dir_next = start_env && *start_env ? atoi(start_env) : 0;
+      dir_end = end_env && *end_env ? atoi(end_env) : 0x7fffffff;
+      dir_step = step_env && *step_env ? atoi(step_env) : 60;
+      if (dir_step <= 0)
+        dir_step = 60;
+    }
+  }
+  if ((!path || dumped) && (!dir || !*dir || dir_next < 0))
+    return;
+  extern int snes_frame_counter;
+  if (path && !dumped) {
+    if (target < 0 || snes_frame_counter >= target) {
+      dump_bgra_auto(path, frame);
+      dumped = 1;
+    }
+  }
+  if (dir && *dir && dir_next >= 0) {
+    while (snes_frame_counter >= dir_next && dir_next <= dir_end) {
+      char dump_path[512];
+      snprintf(dump_path, sizeof(dump_path), "%s/frame_%06d.bmp", dir,
+               dir_next);
+      dump_bgra_auto(dump_path, frame);
+      dir_next += dir_step;
+    }
+  }
 }
 
 RtlEnhancedRenderResult
@@ -1467,7 +1501,10 @@ StarFoxEnhancedRenderFrame(RtlEnhancedRendererFrame *frame) {
   int native_ppu_done = StarFoxEnhancedDrawNativePpuLayers(
       frame->pixels, frame->pitch, frame->width, frame->height,
       frame->widescreen_extra, suppress_superfx_world_bg1 ? 1 : 0);
+  const bool mode2_scene_frame =
+      frame->widescreen_extra != 0 && g_ppu && PPU_mode(g_ppu) == 2;
   if (!suppress_superfx_world_bg1 && native_ppu_done &&
+      !mode2_scene_frame &&
       native_frame_looks_suspect(frame)) {
     clear_frame(frame->pixels, frame->pitch, frame->width, frame->height);
     native_ppu_done = 0;
