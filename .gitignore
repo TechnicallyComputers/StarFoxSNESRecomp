@@ -49,3 +49,16 @@ __pycache__/
 # Per-developer scratch and triage output.
 _*
 _triage/
+
+# --- SNES recomp (Studio) ---
+/src/gen/
+/recomp/funcs.h
+/build/
+/build-*/
+/dist/
+/saves/
+/rom.cfg
+/keybinds.ini
+/config.ini
+/input.ini
+/analysis/

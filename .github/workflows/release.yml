@@ -1,0 +1,101 @@
+# Build Star Fox on Linux. MANUAL TRIGGER ONLY.
+#
+# There is deliberately no push or pull_request trigger. Releases across the
+# port set are driven from the studio bulk tool, and a per-repo workflow that
+# fires on every push competes with it: it burns minutes rebuilding commits
+# nobody asked about, and it makes "did CI pass" ambiguous when the bulk run
+# and a push-triggered run disagree. Run this from the Actions tab, or with
+#   gh workflow run release.yml
+# and pass publish_release from a v* tag to cut a release.
+#
+# The ROM is never stored in CI and never shipped. This workflow therefore
+# builds the framework and the host, but CANNOT generate src/gen/*.c — that
+# needs a ROM. Two ways to make the build step real, both deliberate choices
+# for the project owner rather than defaults chosen here:
+#
+#   1. Publish prebuilt generated C to a private assets repo and fetch it
+#     with a token (the pattern MetalWarriorsSNESRecomp uses).
+#   2. Keep CI to the checks that need no ROM: submodule pins, framework
+#      tests, and a compile of the host sources.
+#
+# As shipped this does (2), so a fresh project has a green pipeline that
+# tells the truth about what it verified.
+
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish a GitHub Release (requires a v* tag ref)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libsdl2-dev zip
+
+      - name: Record framework pins
+        run: |
+          echo "Framework pins this build used:"
+          cat framework_pins.txt
+          git submodule status --recursive
+
+      - name: Framework tests
+        run: bash snesrecomp/tests/run_c_tests.sh
+
+      - name: Verify the host compiles
+        run: |
+          # No ROM in CI, so src/gen/ is empty and the game target cannot
+          # link. Compile the host translation units on their own so a syntax
+          # or API break still fails the pipeline.
+          #
+          # snesrecomp_rom_identity.h is generated from rom_identity.txt.
+          # The build does that at configure time, but configure refuses
+          # without src/gen/, so emit the same header straight from the same
+          # file — the framework owns that emitter, and its own tests pin it
+          # to the CMake one.
+          GEN=build-ci/snesrecomp_generated
+          python3 snesrecomp/tools/rom_identity.py rom_identity.txt \
+            --header "$GEN"
+          for src in src/main.c src/game_rtl.c; do
+            echo "  cc $src"
+            cc -fsyntax-only -I src -I recomp -I "$GEN" \
+               -I snesrecomp/runner/src -I snesrecomp/runner/src/snes \
+               -I snesrecomp/runner/src/desktop -I snesrecomp/host \
+               $(pkg-config --cflags sdl2) "$src"
+          done
+
+      - name: Refuse to publish from a non-tag ref
+        if: inputs.publish_release && !startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "publish_release was set, but this run is on ${GITHUB_REF}." >&2
+          echo "Re-run the workflow selecting a v* tag." >&2
+          exit 1
+
+      - name: Release notes
+        if: inputs.publish_release
+        run: |
+          echo "Star Fox ${GITHUB_REF_NAME}" > notes.md
+          echo "" >> notes.md
+          echo "Players supply their own ROM. No ROM data is included." >> notes.md
+          cat framework_pins.txt >> notes.md
+
+      - name: Publish release
+        if: inputs.publish_release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: notes.md
