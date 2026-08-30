@@ -125,3 +125,16 @@ native renderer bug. It should be fixed in the native compositor or its Star
 Fox state decode, not by re-enabling the old PPU/Super FX widescreen path.
 `SNESRECOMP_ENHANCED_NATIVE_SHAPE_DIAGNOSTICS_FRAME` can restrict the verbose
 per-shape pose log to one source frame during that analysis.
+
+## Local Enhanced Oracle
+
+For renderer-feed parity work, use a local-only `starfox-enhanced` fork with the
+`starfox_tcp_oracle` dev target. It exposes Enhanced's semantic object,
+draw-order, pose, PPU, render-stat, and frame-hash state over localhost TCP so
+StarFoxSNESRecomp can compare against the known native renderer model. This is a
+reference harness, not a production dependency and not a substitute for
+Authentic-mode stock SNES PPU validation.
+
+`tools/starfox_enhanced_oracle_compare.py` attaches to oracle-compatible TCP
+endpoints and writes bounded status/object/pose/BMP snapshots for mismatches or
+single-endpoint dumps.
