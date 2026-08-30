@@ -70,10 +70,11 @@ retail active list for visible geometry; it does not reconstruct objects from
 the free list, and retail has no verified `XALBLKS` mirror. Super FX draw-list
 RAM is intentionally not used as visible geometry because it can be stale or
 zeroed outside the source task. The shadow renderer follows Enhanced's two-pass
-order and shadow-shape/flattened-matrix rules, but runtime validation has not
-yet observed the required `M_PFM` shadow bit at the current post-frame latch;
-the pass therefore remains provisional. Retail scaled-sprite objects now stay
-in the source draw order and use Enhanced's simple scaled-sprite raster path,
+order and shadow-shape/flattened-matrix rules. `PLAYERFLYMODE=$1565` and
+`SHADOWHEIGHT=$19dc` are latched from durable WRAM first, with the transient
+Super FX mirrors kept only as fallback for task-local diagnostics. Retail
+scaled-sprite objects now stay in the source draw order and use Enhanced's
+simple scaled-sprite raster path,
 including the source header size adjustment and per-object colour. The native
 world pass also calls
 Enhanced's `draw_cockpit_hud` when retail `HUDROT=$154e` is enabled, using the
@@ -81,6 +82,12 @@ source `M_HUDCOLOUR=$3512` and `M_HUDFLAGS=$3514` state and the same centered
 224-pixel cockpit viewport as the PC port. The WRAM bridge remains diagnostic
 until terrain/grid, working shadow state, particles, scaled sprites, text,
 remaining HUD coverage, and gameplay validation are complete.
+
+Retail and the Enhanced oracle do not share every shape header address. For
+example, the live retail player object can report shape `$d320`, while the
+Enhanced oracle reports `MYSHIP_4=$bb7f`; both headers point at the same
+`MYSHIP_4_P/F` streams in bank `$11`, so semantic comparison must normalize
+that class of ROM-data relocation before treating it as a renderer mismatch.
 
 The renderer's ROM data symbols must also match the retail cartridge, not the
 linked Enhanced build. Byte-pattern validation against the pinned reference

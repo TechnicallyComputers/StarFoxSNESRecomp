@@ -30,6 +30,8 @@ enum {
   kRamWmat11W = 0x161b,
   kRamGameFrame = 0x15bb,
   kRamHudRotation = 0x154e,
+  kRamPlayerFlyMode = 0x1565,
+  kRamShadowHeight = 0x19dc,
   kGsuVanishX = 0x0034,
   kGsuVanishY = 0x0036,
   kGsuDepthColours = 0x004e,
@@ -783,8 +785,12 @@ void StarFoxEnhancedLatchSourceFrame(void) {
       source_vanish_y = kSourceVanishDefaultY;
     snapshot.vanish_x = add16(source_vanish_x, kSuperFxHorizontalInset);
     snapshot.vanish_y = add16(source_vanish_y, kSuperFxVerticalInset);
-    snapshot.player_fly_mode = (uint8_t)gsu_word(kGsuPlayerFlyMode);
-    snapshot.shadow_height = (int16_t)gsu_word(kGsuShadowHeight);
+    snapshot.player_fly_mode = ram_byte(kRamPlayerFlyMode);
+    snapshot.shadow_height = ram_i16(kRamShadowHeight);
+    if (snapshot.player_fly_mode == 0)
+      snapshot.player_fly_mode = (uint8_t)gsu_word(kGsuPlayerFlyMode);
+    if (snapshot.shadow_height == 0)
+      snapshot.shadow_height = (int16_t)gsu_word(kGsuShadowHeight);
     snapshot.hud_rotation = ram_word(kRamHudRotation);
     snapshot.hud_colour = gsu_byte(kGsuHudColour);
     snapshot.hud_damage_flags = gsu_byte(kGsuHudDamageFlags);
