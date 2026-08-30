@@ -126,6 +126,7 @@ typedef struct NativeSourceFrameSnapshot {
   int16_t view_x;
   int16_t view_y;
   int16_t view_z;
+  int16_t raw_view_z;
   int16_t view_matrix[9];
   int16_t vanish_x;
   int16_t vanish_y;
@@ -136,6 +137,7 @@ typedef struct NativeSourceFrameSnapshot {
   uint8_t hud_damage_flags;
   uint16_t depth_colours;
   uint16_t depth_thresholds;
+  uint8_t view_stabilized;
   unsigned active_count;
   unsigned draw_count;
   unsigned unsupported_invisible;
@@ -190,6 +192,11 @@ enum {
   kNativeWorldMinDrawnShapes = 2,
   kNativeWorldMinVisiblePixels = 4096,
   kNativeWorldHoldMinVisiblePixels = 2048,
+  kPlayerHandle = 1,
+  kPlayerFollowCameraNearZ = 96,
+  kPlayerFollowCameraMinStableZ = 128,
+  kPlayerFollowCameraMaxStableZ = 768,
+  kPlayerFollowMaxWorldStep = 512,
 };
 
 static bool g_native_world_replacement_active;
@@ -296,6 +303,57 @@ static int16_t transform_q15_component(const int16_t matrix[9], int16_t x,
   int16_t result = multiply_q15(x, matrix[column]);
   result = add16(result, multiply_q15(y, matrix[3 + column]));
   return add16(result, multiply_q15(z, matrix[6 + column]));
+}
+
+static int abs_i16_delta(int16_t left, int16_t right) {
+  const int delta = (int)subtract16(left, right);
+  return delta < 0 ? -delta : delta;
+}
+
+static NativeSourceObject *
+source_snapshot_object_by_handle(NativeSourceFrameSnapshot *snapshot,
+                                 uint8_t handle) {
+  if (!snapshot)
+    return NULL;
+  for (unsigned i = 0; i < snapshot->active_count; i++) {
+    if (snapshot->objects[i].handle == handle)
+      return &snapshot->objects[i];
+  }
+  return NULL;
+}
+
+static const NativeSourceObject *
+source_snapshot_const_object_by_handle(const NativeSourceFrameSnapshot *snapshot,
+                                       uint8_t handle) {
+  if (!snapshot)
+    return NULL;
+  for (unsigned i = 0; i < snapshot->active_count; i++) {
+    if (snapshot->objects[i].handle == handle)
+      return &snapshot->objects[i];
+  }
+  return NULL;
+}
+
+static int source_snapshot_view_matrix_matches(
+    const NativeSourceFrameSnapshot *left,
+    const NativeSourceFrameSnapshot *right) {
+  if (!left || !right)
+    return 0;
+  for (unsigned i = 0; i < 9; i++) {
+    if (left->view_matrix[i] != right->view_matrix[i])
+      return 0;
+  }
+  return 1;
+}
+
+static int16_t source_object_camera_z_for_view(
+    const NativeSourceFrameSnapshot *snapshot,
+    const NativeSourceObject *object) {
+  const int16_t relative_x = subtract16(object->world_x, snapshot->view_x);
+  const int16_t relative_y = subtract16(object->world_y, snapshot->view_y);
+  const int16_t relative_z = subtract16(object->world_z, snapshot->view_z);
+  return transform_q15_component(snapshot->view_matrix, relative_x, relative_y,
+                                 relative_z, 2);
 }
 
 static bool object_pointer_index(uint16_t pointer, unsigned *index) {
@@ -727,19 +785,39 @@ static bool classify_and_sort_source_object(NativeSourceFrameSnapshot *snapshot,
 }
 
 static bool latch_source_pool_object(NativeSourceFrameSnapshot *snapshot,
-                                     const Cart *cart, uint16_t pointer,
-                                     unsigned slot) {
+                                     uint16_t pointer, unsigned slot) {
   if (snapshot->active_count >= kObjPoolCount)
     return false;
   latch_source_object(snapshot, pointer, slot);
-  classify_and_sort_source_object(snapshot, cart, snapshot->active_count - 1u);
   return true;
+}
+
+static void classify_source_snapshot_objects(NativeSourceFrameSnapshot *snapshot,
+                                             const Cart *cart) {
+  snapshot->draw_count = 0;
+  snapshot->unsupported_invisible = 0;
+  snapshot->unsupported_shadow = 0;
+  snapshot->unsupported_particle = 0;
+  snapshot->unsupported_scaled = 0;
+  snapshot->unsupported_text = 0;
+  snapshot->unsupported_culled = 0;
+  snapshot->unsupported_invalid = 0;
+  for (unsigned i = 0; i < snapshot->active_count; i++) {
+    snapshot->objects[i].camera_x = 0;
+    snapshot->objects[i].camera_y = 0;
+    snapshot->objects[i].camera_z = 0;
+    snapshot->objects[i].sort_depth = 0;
+    snapshot->objects[i].metadata_valid = 0;
+    snapshot->objects[i].culled = 0;
+    classify_and_sort_source_object(snapshot, cart, i);
+  }
 }
 
 static bool latch_allst_objects(NativeSourceFrameSnapshot *snapshot,
                                 const Cart *cart) {
   bool seen[kObjPoolCount];
   uint16_t pointer = ram_word(kRamAllst);
+  (void)cart;
   memset(seen, 0, sizeof(seen));
 
   while (pointer != 0) {
@@ -749,11 +827,39 @@ static bool latch_allst_objects(NativeSourceFrameSnapshot *snapshot,
       return false;
     seen[slot] = true;
     next = ram_word(pointer + kObjNext);
-    if (!latch_source_pool_object(snapshot, cart, pointer, slot))
+    if (!latch_source_pool_object(snapshot, pointer, slot))
       return false;
     pointer = next;
   }
   return true;
+}
+
+static void stabilize_source_view(NativeSourceFrameSnapshot *snapshot,
+                                  const NativeSourceFrameSnapshot *previous) {
+  NativeSourceObject *player = source_snapshot_object_by_handle(
+      snapshot, (uint8_t)kPlayerHandle);
+  const NativeSourceObject *previous_player =
+      source_snapshot_const_object_by_handle(previous, (uint8_t)kPlayerHandle);
+  int16_t player_camera_z = 0;
+
+  if (!snapshot || !previous || !previous->valid || !player ||
+      !previous_player)
+    return;
+  if (!source_snapshot_view_matrix_matches(snapshot, previous))
+    return;
+  if (abs_i16_delta(player->world_z, previous_player->world_z) >
+      kPlayerFollowMaxWorldStep)
+    return;
+
+  player_camera_z = source_object_camera_z_for_view(snapshot, player);
+  if (player_camera_z <= 0 || player_camera_z >= kPlayerFollowCameraNearZ)
+    return;
+  if (previous_player->camera_z < kPlayerFollowCameraMinStableZ ||
+      previous_player->camera_z > kPlayerFollowCameraMaxStableZ)
+    return;
+
+  snapshot->view_z = subtract16(player->world_z, previous_player->camera_z);
+  snapshot->view_stabilized = 1;
 }
 
 void StarFoxEnhancedLatchSourceFrame(void) {
@@ -772,6 +878,7 @@ void StarFoxEnhancedLatchSourceFrame(void) {
   snapshot.view_x = ram_i16(kRamViewPosX);
   snapshot.view_y = ram_i16(kRamViewPosY);
   snapshot.view_z = ram_i16(kRamViewPosZ);
+  snapshot.raw_view_z = snapshot.view_z;
   for (unsigned i = 0; i < 9; i++)
     snapshot.view_matrix[i] = ram_i16(kRamWmat11W + i * 2u);
   {
@@ -806,6 +913,8 @@ void StarFoxEnhancedLatchSourceFrame(void) {
     memset(&snapshot, 0, sizeof(snapshot));
     goto done;
   }
+  stabilize_source_view(&snapshot, &g_source_snapshot);
+  classify_source_snapshot_objects(&snapshot, cart);
   snapshot.valid = snapshot.active_count != 0;
 
 done:
@@ -1181,6 +1290,26 @@ static void debug_send_ppu(DebugServerGameSendLine send_line) {
               (unsigned)ppu->bgXsc[2], 0u, 0u, (unsigned)PPU_brightness(ppu));
 }
 
+static void debug_send_source_view(DebugServerGameSendLine send_line) {
+  NativeSourceFrameSnapshot snapshot = g_source_snapshot;
+  debug_sendf(send_line,
+              "source frame=%d logic=%u valid=%u view=%d,%d,%d "
+              "raw_view_z=%d stabilized=%u "
+              "wmat=%d,%d,%d,%d,%d,%d,%d,%d,%d vanish=%d,%d "
+              "shadow_height=%d fly_mode=%02x",
+              snapshot.frame, (unsigned)snapshot.game_frame,
+              (unsigned)snapshot.valid, (int)snapshot.view_x,
+              (int)snapshot.view_y, (int)snapshot.view_z,
+              (int)snapshot.raw_view_z, (unsigned)snapshot.view_stabilized,
+              (int)snapshot.view_matrix[0], (int)snapshot.view_matrix[1],
+              (int)snapshot.view_matrix[2], (int)snapshot.view_matrix[3],
+              (int)snapshot.view_matrix[4], (int)snapshot.view_matrix[5],
+              (int)snapshot.view_matrix[6], (int)snapshot.view_matrix[7],
+              (int)snapshot.view_matrix[8], (int)snapshot.vanish_x,
+              (int)snapshot.vanish_y, (int)snapshot.shadow_height,
+              (unsigned)snapshot.player_fly_mode);
+}
+
 static void debug_send_render_stats(DebugServerGameSendLine send_line) {
   debug_sendf(send_line,
               "render_stats active=%u draw_order=%u candidates=%u "
@@ -1227,6 +1356,10 @@ static int starfox_enhanced_debug_command(const char *cmd, const char *args,
   }
   if (strcmp(cmd, "ppu") == 0) {
     debug_send_ppu(send_line);
+    return 1;
+  }
+  if (strcmp(cmd, "source_view") == 0) {
+    debug_send_source_view(send_line);
     return 1;
   }
   if (strcmp(cmd, "render_stats") == 0) {
